@@ -1,0 +1,4 @@
+/build/
+*.o
+*.spv
+compile_commands.json
