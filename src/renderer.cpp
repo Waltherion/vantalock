@@ -75,9 +75,11 @@ Renderer::~Renderer()
         if (m_texView) vkDestroyImageView(m_device, m_texView, nullptr);
         if (m_texImage) vkDestroyImage(m_device, m_texImage, nullptr);
         if (m_texMem) vkFreeMemory(m_device, m_texMem, nullptr);
-        if (m_pipeline) vkDestroyPipeline(m_device, m_pipeline, nullptr);
+        for (auto &fp : m_formatPipelines) {
+            if (fp.pipeline) vkDestroyPipeline(m_device, fp.pipeline, nullptr);
+            if (fp.renderPass) vkDestroyRenderPass(m_device, fp.renderPass, nullptr);
+        }
         if (m_pipeLayout) vkDestroyPipelineLayout(m_device, m_pipeLayout, nullptr);
-        if (m_renderPass) vkDestroyRenderPass(m_device, m_renderPass, nullptr);
         if (m_descLayout) vkDestroyDescriptorSetLayout(m_device, m_descLayout, nullptr);
         if (m_descPool) vkDestroyDescriptorPool(m_device, m_descPool, nullptr);
         if (m_sampler) vkDestroySampler(m_device, m_sampler, nullptr);
@@ -175,49 +177,46 @@ bool Renderer::createLogicalDevice()
     return true;
 }
 
-bool Renderer::chooseFormat(VkSurfaceKHR probe)
+bool Renderer::chooseFormat(VkSurfaceKHR surface, bool wantHdr, VkSurfaceFormatKHR &out, bool &gotHdr)
 {
     uint32_t n = 0;
-    vkGetPhysicalDeviceSurfaceFormatsKHR(m_phys, probe, &n, nullptr);
+    vkGetPhysicalDeviceSurfaceFormatsKHR(m_phys, surface, &n, nullptr);
     std::vector<VkSurfaceFormatKHR> fmts(n);
-    vkGetPhysicalDeviceSurfaceFormatsKHR(m_phys, probe, &n, fmts.data());
+    vkGetPhysicalDeviceSurfaceFormatsKHR(m_phys, surface, &n, fmts.data());
 
-    // Preferred HDR: fp16 extended-linear scRGB (matches vantaviewer's path).
-    if (m_wantHdr) {
+    // HDR monitor: fp16 extended-linear scRGB (matches vantaviewer's path).
+    if (wantHdr) {
         for (const auto &f : fmts) {
             if (f.format == VK_FORMAT_R16G16B16A16_SFLOAT
                 && f.colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT) {
-                m_format = f;
-                m_hdr = true;
-                std::fprintf(stderr, "vantalock: swapchain = R16G16B16A16_SFLOAT / scRGB (HDR)\n");
+                out = f;
+                gotHdr = true;
                 return true;
             }
         }
-        std::fprintf(stderr, "vantalock: no scRGB HDR format; falling back to SDR\n");
+        std::fprintf(stderr, "vantalock: no scRGB HDR format on this output; using SDR\n");
     }
 
-    // SDR fallback: a plain UNORM (the shader does sRGB encoding itself, so we
-    // must NOT pick a _SRGB format or it would double-encode).
+    // SDR: a plain UNORM (the shader does sRGB encoding itself, so we must NOT
+    // pick a _SRGB format or the hardware would double-encode).
     for (const auto &f : fmts) {
         if ((f.format == VK_FORMAT_B8G8R8A8_UNORM || f.format == VK_FORMAT_R8G8B8A8_UNORM)
             && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-            m_format = f;
-            m_hdr = false;
-            std::fprintf(stderr, "vantalock: swapchain = UNORM / sRGB (SDR)\n");
+            out = f;
+            gotHdr = false;
             return true;
         }
     }
     if (n) {
-        m_format = fmts[0];
-        m_hdr = false;
-        std::fprintf(stderr, "vantalock: using first available surface format (SDR)\n");
+        out = fmts[0];
+        gotHdr = false;
         return true;
     }
     std::fprintf(stderr, "vantalock: no surface formats\n");
     return false;
 }
 
-bool Renderer::createRenderPipeline()
+bool Renderer::createSharedResources()
 {
     // Descriptor set layout: UBO (binding 0) + sampled texture (binding 1), frag stage.
     VkDescriptorSetLayoutBinding binds[2]{};
@@ -255,9 +254,34 @@ bool Renderer::createRenderPipeline()
     pl.pSetLayouts = &m_descLayout;
     VKCHECK(vkCreatePipelineLayout(m_device, &pl, nullptr, &m_pipeLayout), "pipeline layout");
 
-    // Render pass: single colour attachment in the swapchain format.
+    // Linear sampler, clamp to edge.
+    VkSamplerCreateInfo si{};
+    si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    si.magFilter = VK_FILTER_LINEAR;
+    si.minFilter = VK_FILTER_LINEAR;
+    si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.maxLod = 0.0f;
+    si.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+    VKCHECK(vkCreateSampler(m_device, &si, nullptr, &m_sampler), "sampler");
+    return true;
+}
+
+bool Renderer::getOrCreatePipeline(VkFormat format, VkRenderPass &rp, VkPipeline &pipe)
+{
+    for (const auto &fp : m_formatPipelines) {
+        if (fp.format == format) {
+            rp = fp.renderPass;
+            pipe = fp.pipeline;
+            return true;
+        }
+    }
+
+    // Render pass: single colour attachment in this swapchain format.
     VkAttachmentDescription colour{};
-    colour.format = m_format.format;
+    colour.format = format;
     colour.samples = VK_SAMPLE_COUNT_1_BIT;
     colour.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     colour.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -276,17 +300,17 @@ bool Renderer::createRenderPipeline()
     dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    VkRenderPassCreateInfo rp{};
-    rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    rp.attachmentCount = 1;
-    rp.pAttachments = &colour;
-    rp.subpassCount = 1;
-    rp.pSubpasses = &sub;
-    rp.dependencyCount = 1;
-    rp.pDependencies = &dep;
-    VKCHECK(vkCreateRenderPass(m_device, &rp, nullptr, &m_renderPass), "render pass");
+    VkRenderPassCreateInfo rpci{};
+    rpci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    rpci.attachmentCount = 1;
+    rpci.pAttachments = &colour;
+    rpci.subpassCount = 1;
+    rpci.pSubpasses = &sub;
+    rpci.dependencyCount = 1;
+    rpci.pDependencies = &dep;
+    VkRenderPass newRp = VK_NULL_HANDLE;
+    VKCHECK(vkCreateRenderPass(m_device, &rpci, nullptr, &newRp), "render pass");
 
-    // Shader modules.
     auto makeModule = [&](const uint32_t *code, size_t bytes, VkShaderModule *out) -> bool {
         VkShaderModuleCreateInfo mi{};
         mi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -338,10 +362,10 @@ bool Renderer::createRenderPipeline()
     cb.attachmentCount = 1;
     cb.pAttachments = &cba;
     VkDynamicState dyn[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
-    VkPipelineDynamicStateCreateInfo ds{};
-    ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    ds.dynamicStateCount = 2;
-    ds.pDynamicStates = dyn;
+    VkPipelineDynamicStateCreateInfo dst{};
+    dst.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dst.dynamicStateCount = 2;
+    dst.pDynamicStates = dyn;
 
     VkGraphicsPipelineCreateInfo gp{};
     gp.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -353,28 +377,24 @@ bool Renderer::createRenderPipeline()
     gp.pRasterizationState = &rs;
     gp.pMultisampleState = &ms;
     gp.pColorBlendState = &cb;
-    gp.pDynamicState = &ds;
+    gp.pDynamicState = &dst;
     gp.layout = m_pipeLayout;
-    gp.renderPass = m_renderPass;
+    gp.renderPass = newRp;
     gp.subpass = 0;
 
-    VkResult pr = vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &gp, nullptr, &m_pipeline);
+    VkPipeline newPipe = VK_NULL_HANDLE;
+    VkResult pr = vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &gp, nullptr, &newPipe);
     vkDestroyShaderModule(m_device, vert, nullptr);
     vkDestroyShaderModule(m_device, frag, nullptr);
-    VKCHECK(pr, "vkCreateGraphicsPipelines");
+    if (pr != VK_SUCCESS) {
+        std::fprintf(stderr, "vantalock: vkCreateGraphicsPipelines (VkResult=%d)\n", pr);
+        vkDestroyRenderPass(m_device, newRp, nullptr);
+        return false;
+    }
 
-    // Linear sampler, clamp to edge.
-    VkSamplerCreateInfo si{};
-    si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    si.magFilter = VK_FILTER_LINEAR;
-    si.minFilter = VK_FILTER_LINEAR;
-    si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    si.maxLod = 0.0f;
-    si.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
-    VKCHECK(vkCreateSampler(m_device, &si, nullptr, &m_sampler), "sampler");
+    m_formatPipelines.push_back({ format, newRp, newPipe });
+    rp = newRp;
+    pipe = newPipe;
     return true;
 }
 
@@ -491,8 +511,7 @@ bool Renderer::ensureDevice(VkSurfaceKHR probe, const HdrImage &img)
         return true;
     if (!pickPhysicalDevice(probe)) return false;
     if (!createLogicalDevice()) return false;
-    if (!chooseFormat(probe)) return false;
-    if (!createRenderPipeline()) return false;
+    if (!createSharedResources()) return false;
     if (!uploadTexture(img)) return false;
     m_deviceReady = true;
     return true;
@@ -521,13 +540,26 @@ bool Renderer::probe(VkSurfaceKHR surface)
     return true;
 }
 
-bool Renderer::createOutput(Output &out, VkSurfaceKHR surface, uint32_t w, uint32_t h, const HdrImage &img)
+bool Renderer::createOutput(Output &out, VkSurfaceKHR surface, uint32_t w, uint32_t h,
+                            const HdrImage &img, bool wantHdr)
 {
     out.surface = surface;
     out.imgW = img.w;
     out.imgH = img.h;
     out.imgHdr = img.hdr;
     out.imgPrimaries = int(img.primaries);
+
+    // Per-output format + mode: scRGB on HDR monitors, sRGB on SDR ones.
+    VkSurfaceFormatKHR sfmt{};
+    bool gotHdr = false;
+    if (!chooseFormat(surface, wantHdr, sfmt, gotHdr))
+        return false;
+    out.format = sfmt.format;
+    out.hdr = gotHdr;
+    if (!getOrCreatePipeline(sfmt.format, out.renderPass, out.pipeline))
+        return false;
+    std::fprintf(stderr, "vantalock: output swapchain = %s (format=%d)\n",
+        gotHdr ? "scRGB (HDR)" : "sRGB (SDR)", int(sfmt.format));
 
     VkSurfaceCapabilitiesKHR caps;
     VKCHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(m_phys, surface, &caps), "surface caps");
@@ -557,8 +589,8 @@ bool Renderer::createOutput(Output &out, VkSurfaceKHR surface, uint32_t w, uint3
     sci.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
     sci.surface = surface;
     sci.minImageCount = imageCount;
-    sci.imageFormat = m_format.format;
-    sci.imageColorSpace = m_format.colorSpace;
+    sci.imageFormat = sfmt.format;
+    sci.imageColorSpace = sfmt.colorSpace;
     sci.imageExtent = extent;
     sci.imageArrayLayers = 1;
     sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
@@ -581,13 +613,13 @@ bool Renderer::createOutput(Output &out, VkSurfaceKHR surface, uint32_t w, uint3
         vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         vci.image = images[i];
         vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        vci.format = m_format.format;
+        vci.format = sfmt.format;
         vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
         VKCHECK(vkCreateImageView(m_device, &vci, nullptr, &out.views[i]), "swapchain view");
 
         VkFramebufferCreateInfo fci{};
         fci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        fci.renderPass = m_renderPass;
+        fci.renderPass = out.renderPass;
         fci.attachmentCount = 1;
         fci.pAttachments = &out.views[i];
         fci.width = extent.width;
@@ -687,8 +719,8 @@ void Renderer::renderOutput(Output &out)
     else         usx = as / ai;
 
     float ubo[16] = {
-        m_hdr ? (203.0f / 80.0f) : 1.0f, // scale
-        m_hdr ? 0.0f : 1.0f,             // sdr
+        out.hdr ? (203.0f / 80.0f) : 1.0f, // scale
+        out.hdr ? 0.0f : 1.0f,             // sdr
         out.imgHdr ? 1.0f : 0.0f,        // imageHdr
         0.0f,                            // rot
         usx, usy, 0.0f, 0.0f,            // uvScale, uvOffset
@@ -707,7 +739,7 @@ void Renderer::renderOutput(Output &out)
     clear.color = { { 0.0f, 0.0f, 0.0f, 1.0f } };
     VkRenderPassBeginInfo rp{};
     rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rp.renderPass = m_renderPass;
+    rp.renderPass = out.renderPass;
     rp.framebuffer = out.framebuffers[idx];
     rp.renderArea.extent = out.extent;
     rp.clearValueCount = 1;
@@ -718,7 +750,7 @@ void Renderer::renderOutput(Output &out)
     VkRect2D sc{ { 0, 0 }, out.extent };
     vkCmdSetViewport(out.cmd, 0, 1, &vpt);
     vkCmdSetScissor(out.cmd, 0, 1, &sc);
-    vkCmdBindPipeline(out.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline);
+    vkCmdBindPipeline(out.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, out.pipeline);
     vkCmdBindDescriptorSets(out.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeLayout,
         0, 1, &out.descriptor, 0, nullptr);
     vkCmdDraw(out.cmd, 3, 1, 0, 0);

@@ -6,6 +6,11 @@
 #include <wayland-client.h>
 #include "ext-session-lock-v1-client-protocol.h"
 
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QProcess>
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -58,6 +63,21 @@ void seatCaps(void *data, wl_seat *, uint32_t caps)
 void seatName(void *, wl_seat *, const char *) {}
 const wl_seat_listener kSeatListener = { seatCaps, seatName };
 
+void outGeometry(void *, wl_output *, int32_t, int32_t, int32_t, int32_t, int32_t,
+                 const char *, const char *, int32_t) {}
+void outMode(void *, wl_output *, uint32_t, int32_t, int32_t, int32_t) {}
+void outDone(void *, wl_output *) {}
+void outScale(void *, wl_output *, int32_t) {}
+void outName(void *data, wl_output *, const char *name)
+{
+    auto *ctx = static_cast<SessionLock::OutputCtx *>(data);
+    ctx->owner->onOutputName(ctx, name);
+}
+void outDescription(void *, wl_output *, const char *) {}
+const wl_output_listener kOutputListener = {
+    outGeometry, outMode, outDone, outScale, outName, outDescription
+};
+
 } // namespace
 
 // ---- SessionLock ----------------------------------------------------------
@@ -106,6 +126,9 @@ void SessionLock::onGlobal(wl_registry *reg, uint32_t name, const char *iface, u
         ctx->globalName = name;
         ctx->output = static_cast<wl_output *>(
             wl_registry_bind(reg, name, &wl_output_interface, version < 4 ? version : 4));
+        // v4+ delivers the connector name event we match against hyprctl.
+        if (version >= 4)
+            wl_output_add_listener(ctx->output, &kOutputListener, ctx.get());
         m_outputs.push_back(std::move(ctx));
     }
 }
@@ -139,6 +162,38 @@ void SessionLock::onFinished()
     m_finished = true;
     m_running = false;
     std::fprintf(stderr, "vantalock: lock finished (compositor denied or ended lock)\n");
+}
+
+void SessionLock::onOutputName(OutputCtx *ctx, const char *name)
+{
+    if (name)
+        ctx->name = name;
+}
+
+bool SessionLock::monitorWantsHdr(const std::string &name)
+{
+    if (!m_hdrQueried) {
+        m_hdrQueried = true;
+        QProcess p;
+        p.start(QStringLiteral("hyprctl"), { QStringLiteral("monitors"), QStringLiteral("-j") });
+        if (p.waitForFinished(2000)) {
+            const QJsonDocument doc = QJsonDocument::fromJson(p.readAllStandardOutput());
+            for (const QJsonValue &v : doc.array()) {
+                const QJsonObject o = v.toObject();
+                const std::string n = o.value(QStringLiteral("name")).toString().toStdString();
+                const bool hdr = o.value(QStringLiteral("colorManagementPreset")).toString()
+                    == QStringLiteral("hdr");
+                m_hdrByName[n] = hdr;
+                std::fprintf(stderr, "vantalock: monitor %s -> %s\n", n.c_str(), hdr ? "HDR" : "SDR");
+            }
+        } else {
+            std::fprintf(stderr, "vantalock: hyprctl query failed; assuming all SDR\n");
+        }
+    }
+    auto it = m_hdrByName.find(name);
+    // Default SDR when unknown: an sRGB surface displays correctly on any monitor,
+    // whereas an scRGB surface on an SDR monitor washes out.
+    return it != m_hdrByName.end() ? it->second : false;
 }
 
 void SessionLock::onSeatCapabilities(uint32_t caps)
@@ -189,20 +244,22 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
         m_deviceReady = true;
     }
 
+    const bool wantHdr = monitorWantsHdr(ctx->name);
+
     if (!ctx->configured) {
-        if (!m_renderer->createOutput(ctx->render, ctx->render.surface, w, h, m_image)) {
+        if (!m_renderer->createOutput(ctx->render, ctx->render.surface, w, h, m_image, wantHdr)) {
             std::fprintf(stderr, "vantalock: createOutput failed\n");
             return;
         }
         // Tag the surface BEFORE the first commit (present) so true black holds.
-        // Default OFF: the Vulkan WSI already propagates the swapchain's scRGB
-        // colour space, and a second image-description on the same wl_surface can
-        // be a protocol error. Enable VANTALOCK_CM_TAG=1 to force a manual tag if
-        // black still looks grey (matches vantapaper/vantaviewer's Qt path).
+        // Default OFF: the Vulkan WSI already propagates the swapchain's colour
+        // space, and a second image-description on the same wl_surface can be a
+        // protocol error. Enable VANTALOCK_CM_TAG=1 to force a manual tag if black
+        // still looks grey (matches vantapaper/vantaviewer's Qt path).
         if (std::getenv("VANTALOCK_CM_TAG")) {
             ctx->color = std::make_unique<cm::SurfaceColor>(m_display, ctx->surface);
             if (ctx->color->valid()) {
-                if (m_renderer->hdrActive() && ctx->color->supportsScrgb())
+                if (ctx->render.hdr && ctx->color->supportsScrgb())
                     ctx->color->setWindowsScrgb();
                 else
                     ctx->color->setSrgb();
@@ -212,11 +269,10 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
         m_renderer->renderOutput(ctx->render);
     } else if (ctx->render.extent.width != w || ctx->render.extent.height != h) {
         // Resize: rebuild swapchain (keep the cm tag + surface).
-        Renderer::Output fresh;
         m_renderer->destroyOutput(ctx->render);
-        ctx->render = fresh;
+        ctx->render = Renderer::Output{};
         ctx->render.surface = m_renderer->createWaylandSurface(m_display, ctx->surface);
-        m_renderer->createOutput(ctx->render, ctx->render.surface, w, h, m_image);
+        m_renderer->createOutput(ctx->render, ctx->render.surface, w, h, m_image, wantHdr);
         m_renderer->renderOutput(ctx->render);
     }
 }
@@ -264,6 +320,7 @@ bool SessionLock::run()
     wl_registry *registry = wl_display_get_registry(m_display);
     wl_registry_add_listener(registry, &kRegistryListener, this);
     wl_display_roundtrip(m_display); // bind globals + collect outputs
+    wl_display_roundtrip(m_display); // collect wl_output name/mode events
 
     if (!m_compositor || !m_lockManager) {
         std::fprintf(stderr, "vantalock: missing wl_compositor or ext_session_lock_manager_v1\n");

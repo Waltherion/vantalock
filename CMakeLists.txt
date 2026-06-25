@@ -9,8 +9,9 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
-# Qt is used only for image decoding (hdr_image), never for windowing.
-find_package(Qt6 REQUIRED COMPONENTS Gui)
+# Qt is used for image decoding (hdr_image) and small utilities (hyprctl query,
+# JSON), never for windowing.
+find_package(Qt6 REQUIRED COMPONENTS Core Gui)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(WaylandClient REQUIRED IMPORTED_TARGET wayland-client)
@@ -76,6 +77,7 @@ set_source_files_properties(src/renderer.cpp PROPERTIES
 target_include_directories(vantalock PRIVATE "${WL_GEN_DIR}" "${SPV_DIR}")
 
 target_link_libraries(vantalock PRIVATE
+    Qt6::Core
     Qt6::Gui
     Vulkan::Vulkan
     PkgConfig::WaylandClient

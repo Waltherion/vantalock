@@ -33,6 +33,11 @@ public:
         VkSemaphore renderSem = VK_NULL_HANDLE;
         VkFence inFlight = VK_NULL_HANDLE;
         bool ready = false;
+        // This output's chosen swapchain format + mode + (non-owning) pipeline.
+        VkFormat format = VK_FORMAT_UNDEFINED;
+        bool hdr = false;
+        VkRenderPass renderPass = VK_NULL_HANDLE;
+        VkPipeline pipeline = VK_NULL_HANDLE;
         // Dimensions of the source image (for cover-fit UV maths).
         int imgW = 0, imgH = 0;
         bool imgHdr = false;
@@ -45,21 +50,23 @@ public:
 
     bool ok() const { return m_instance != VK_NULL_HANDLE; }
     VkInstance instance() const { return m_instance; }
-    bool hdrActive() const { return m_hdr; }
 
     // Wrap a wl_surface as a VkSurfaceKHR (no commit happens here).
     VkSurfaceKHR createWaylandSurface(wl_display *display, wl_surface *surface);
 
-    // Lazily create the device + pipeline + upload the texture, using probe as a
-    // present-capable reference surface. Safe to call repeatedly (no-op after first).
+    // Lazily create the device + shared resources + upload the texture, using
+    // probe as a present-capable reference surface. No-op after the first call.
     bool ensureDevice(VkSurfaceKHR probe, const HdrImage &img);
 
     // Non-locking diagnostic: pick a GPU and dump the surface formats, reporting
     // whether the scRGB HDR swapchain format is available. Used by --probe.
     bool probe(VkSurfaceKHR surface);
 
-    // Build the swapchain + per-output resources for one monitor.
-    bool createOutput(Output &out, VkSurfaceKHR surface, uint32_t w, uint32_t h, const HdrImage &img);
+    // Build the swapchain + per-output resources for one monitor. wantHdr selects
+    // an scRGB swapchain (HDR monitor) vs an sRGB one (SDR monitor); the actual
+    // mode used is reported in out.hdr (falls back to SDR if scRGB is unavailable).
+    bool createOutput(Output &out, VkSurfaceKHR surface, uint32_t w, uint32_t h,
+                      const HdrImage &img, bool wantHdr);
 
     // Acquire -> record -> submit -> present one frame for this output.
     void renderOutput(Output &out);
@@ -69,10 +76,19 @@ public:
 private:
     bool pickPhysicalDevice(VkSurfaceKHR probe);
     bool createLogicalDevice();
-    bool chooseFormat(VkSurfaceKHR probe);
-    bool createRenderPipeline();
+    bool createSharedResources(); // descriptor layout/pool, pipeline layout, sampler
+    bool chooseFormat(VkSurfaceKHR surface, bool wantHdr, VkSurfaceFormatKHR &out, bool &gotHdr);
+    bool getOrCreatePipeline(VkFormat format, VkRenderPass &rp, VkPipeline &pipe);
     bool uploadTexture(const HdrImage &img);
     uint32_t findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags props) const;
+
+    // One render pass + pipeline per distinct swapchain format (HDR scRGB vs SDR).
+    struct FormatPipeline {
+        VkFormat format = VK_FORMAT_UNDEFINED;
+        VkRenderPass renderPass = VK_NULL_HANDLE;
+        VkPipeline pipeline = VK_NULL_HANDLE;
+    };
+    std::vector<FormatPipeline> m_formatPipelines;
 
     VkInstance m_instance = VK_NULL_HANDLE;
     VkPhysicalDevice m_phys = VK_NULL_HANDLE;
@@ -83,8 +99,6 @@ private:
     VkDescriptorPool m_descPool = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_descLayout = VK_NULL_HANDLE;
     VkPipelineLayout m_pipeLayout = VK_NULL_HANDLE;
-    VkRenderPass m_renderPass = VK_NULL_HANDLE;
-    VkPipeline m_pipeline = VK_NULL_HANDLE;
     VkSampler m_sampler = VK_NULL_HANDLE;
 
     // The single HDR texture (wallpaper), shared by all outputs.
@@ -92,8 +106,6 @@ private:
     VkDeviceMemory m_texMem = VK_NULL_HANDLE;
     VkImageView m_texView = VK_NULL_HANDLE;
 
-    VkSurfaceFormatKHR m_format{};
     bool m_wantHdr = true;
-    bool m_hdr = false;
     bool m_deviceReady = false;
 };

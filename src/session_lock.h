@@ -1,6 +1,8 @@
 #pragma once
 
+#include <map>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "renderer.h"
@@ -50,6 +52,7 @@ public:
         SessionLock *owner = nullptr;
         wl_output *output = nullptr;
         uint32_t globalName = 0;
+        std::string name; // connector name (e.g. "DP-1"), from wl_output.name
         wl_surface *surface = nullptr;
         ext_session_lock_surface_v1 *lockSurface = nullptr;
         std::unique_ptr<cm::SurfaceColor> color;
@@ -58,9 +61,16 @@ public:
         uint32_t w = 0, h = 0;
     };
     void onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w, uint32_t h);
+    void onOutputName(OutputCtx *ctx, const char *name);
 
 private:
     void setupOutput(OutputCtx *ctx);
+    // True if the monitor with this connector name is in HDR mode, per
+    // `hyprctl monitors -j` (colorManagementPreset). Cached on first query.
+    bool monitorWantsHdr(const std::string &name);
+
+    std::map<std::string, bool> m_hdrByName;
+    bool m_hdrQueried = false;
 
     const HdrImage &m_image;
 
