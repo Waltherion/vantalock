@@ -28,6 +28,11 @@ public:
         VkDeviceMemory uboMem = VK_NULL_HANDLE;
         void *uboMapped = nullptr;
         VkDescriptorSet descriptor = VK_NULL_HANDLE;
+        // Second UBO + descriptor for the sharp thumbnail (same texture, blur=0).
+        VkBuffer thumbUbo = VK_NULL_HANDLE;
+        VkDeviceMemory thumbUboMem = VK_NULL_HANDLE;
+        void *thumbUboMapped = nullptr;
+        VkDescriptorSet thumbDescriptor = VK_NULL_HANDLE;
         VkCommandBuffer cmd = VK_NULL_HANDLE;
         VkSemaphore acquireSem = VK_NULL_HANDLE;
         VkSemaphore renderSem = VK_NULL_HANDLE;
@@ -80,6 +85,8 @@ private:
     bool chooseFormat(VkSurfaceKHR surface, bool wantHdr, VkSurfaceFormatKHR &out, bool &gotHdr);
     bool getOrCreatePipeline(VkFormat format, VkRenderPass &rp, VkPipeline &pipe);
     bool uploadTexture(const HdrImage &img);
+    // Create a 16-float UBO + a descriptor set bound to (that UBO, the wallpaper texture).
+    bool createUboSet(VkBuffer &buf, VkDeviceMemory &mem, void *&mapped, VkDescriptorSet &set);
     uint32_t findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags props) const;
 
     // One render pass + pipeline per distinct swapchain format (HDR scRGB vs SDR).
@@ -110,4 +117,6 @@ private:
     bool m_deviceReady = false;
     float m_dim = 0.5f;   // background dim multiplier (linear); VANTALOCK_DIM
     float m_blur = 0.02f; // background blur radius in uv units; VANTALOCK_BLUR
+    bool m_thumb = true;       // draw the sharp thumbnail; VANTALOCK_THUMB=0 disables
+    float m_thumbFrac = 0.30f; // thumbnail height as fraction of output; VANTALOCK_THUMB_HEIGHT
 };

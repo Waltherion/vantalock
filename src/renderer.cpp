@@ -44,6 +44,10 @@ Renderer::Renderer(bool wantHdr)
         m_dim = float(std::atof(d));
     if (const char *b = std::getenv("VANTALOCK_BLUR"))
         m_blur = float(std::atof(b));
+    if (const char *t = std::getenv("VANTALOCK_THUMB"))
+        m_thumb = !(t[0] == '0' && t[1] == '\0');
+    if (const char *th = std::getenv("VANTALOCK_THUMB_HEIGHT"))
+        m_thumbFrac = float(std::atof(th));
 
     VkApplicationInfo app{};
     app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -243,12 +247,12 @@ bool Renderer::createSharedResources()
     // Pool large enough for several monitors.
     VkDescriptorPoolSize ps[2]{};
     ps[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    ps[0].descriptorCount = 8;
+    ps[0].descriptorCount = 32;
     ps[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    ps[1].descriptorCount = 8;
+    ps[1].descriptorCount = 32;
     VkDescriptorPoolCreateInfo dp{};
     dp.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    dp.maxSets = 8;
+    dp.maxSets = 32;
     dp.poolSizeCount = 2;
     dp.pPoolSizes = ps;
     VKCHECK(vkCreateDescriptorPool(m_device, &dp, nullptr, &m_descPool), "descriptor pool");
@@ -545,6 +549,51 @@ bool Renderer::probe(VkSurfaceKHR surface)
     return true;
 }
 
+bool Renderer::createUboSet(VkBuffer &buf, VkDeviceMemory &mem, void *&mapped, VkDescriptorSet &set)
+{
+    VkBufferCreateInfo bi{};
+    bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bi.size = 16 * sizeof(float);
+    bi.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VKCHECK(vkCreateBuffer(m_device, &bi, nullptr, &buf), "ubo buffer");
+    VkMemoryRequirements mreq;
+    vkGetBufferMemoryRequirements(m_device, buf, &mreq);
+    VkMemoryAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.allocationSize = mreq.size;
+    ai.memoryTypeIndex = findMemoryType(mreq.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VKCHECK(vkAllocateMemory(m_device, &ai, nullptr, &mem), "ubo memory");
+    vkBindBufferMemory(m_device, buf, mem, 0);
+    vkMapMemory(m_device, mem, 0, bi.size, 0, &mapped);
+
+    VkDescriptorSetAllocateInfo da{};
+    da.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    da.descriptorPool = m_descPool;
+    da.descriptorSetCount = 1;
+    da.pSetLayouts = &m_descLayout;
+    VKCHECK(vkAllocateDescriptorSets(m_device, &da, &set), "descriptor set");
+
+    VkDescriptorBufferInfo dbi{ buf, 0, bi.size };
+    VkDescriptorImageInfo dii{ m_sampler, m_texView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+    VkWriteDescriptorSet writes[2]{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = set;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[0].pBufferInfo = &dbi;
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = set;
+    writes[1].dstBinding = 1;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].pImageInfo = &dii;
+    vkUpdateDescriptorSets(m_device, 2, writes, 0, nullptr);
+    return true;
+}
+
 bool Renderer::createOutput(Output &out, VkSurfaceKHR surface, uint32_t w, uint32_t h,
                             const HdrImage &img, bool wantHdr)
 {
@@ -634,47 +683,10 @@ bool Renderer::createOutput(Output &out, VkSurfaceKHR surface, uint32_t w, uint3
     }
 
     // UBO (host visible, persistently mapped).
-    VkBufferCreateInfo bi{};
-    bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bi.size = 16 * sizeof(float);
-    bi.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-    bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    VKCHECK(vkCreateBuffer(m_device, &bi, nullptr, &out.ubo), "ubo buffer");
-    VkMemoryRequirements mreq;
-    vkGetBufferMemoryRequirements(m_device, out.ubo, &mreq);
-    VkMemoryAllocateInfo ai{};
-    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    ai.allocationSize = mreq.size;
-    ai.memoryTypeIndex = findMemoryType(mreq.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    VKCHECK(vkAllocateMemory(m_device, &ai, nullptr, &out.uboMem), "ubo memory");
-    vkBindBufferMemory(m_device, out.ubo, out.uboMem, 0);
-    vkMapMemory(m_device, out.uboMem, 0, bi.size, 0, &out.uboMapped);
-
-    // Descriptor set.
-    VkDescriptorSetAllocateInfo da{};
-    da.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    da.descriptorPool = m_descPool;
-    da.descriptorSetCount = 1;
-    da.pSetLayouts = &m_descLayout;
-    VKCHECK(vkAllocateDescriptorSets(m_device, &da, &out.descriptor), "descriptor set");
-
-    VkDescriptorBufferInfo dbi{ out.ubo, 0, bi.size };
-    VkDescriptorImageInfo dii{ m_sampler, m_texView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-    VkWriteDescriptorSet writes[2]{};
-    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet = out.descriptor;
-    writes[0].dstBinding = 0;
-    writes[0].descriptorCount = 1;
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    writes[0].pBufferInfo = &dbi;
-    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet = out.descriptor;
-    writes[1].dstBinding = 1;
-    writes[1].descriptorCount = 1;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[1].pImageInfo = &dii;
-    vkUpdateDescriptorSets(m_device, 2, writes, 0, nullptr);
+    if (!createUboSet(out.ubo, out.uboMem, out.uboMapped, out.descriptor))
+        return false;
+    if (!createUboSet(out.thumbUbo, out.thumbUboMem, out.thumbUboMapped, out.thumbDescriptor))
+        return false;
 
     // Command buffer + sync.
     VkCommandBufferAllocateInfo cbi{};
@@ -723,16 +735,28 @@ void Renderer::renderOutput(Output &out)
     if (as > ai) usy = ai / as;
     else         usx = as / ai;
 
+    const float scale = out.hdr ? (203.0f / 80.0f) : 1.0f;
+    const float sdr = out.hdr ? 0.0f : 1.0f;
+    const float imageHdr = out.imgHdr ? 1.0f : 0.0f;
+    const float prim = float(out.imgPrimaries);
+
     float ubo[16] = {
-        out.hdr ? (203.0f / 80.0f) : 1.0f, // scale
-        out.hdr ? 0.0f : 1.0f,             // sdr
-        out.imgHdr ? 1.0f : 0.0f,        // imageHdr
-        0.0f,                            // rot
+        scale, sdr, imageHdr, 0.0f,      // scale, sdr, imageHdr, rot
         usx, usy, 0.0f, 0.0f,            // uvScale, uvOffset
-        float(out.imgPrimaries), 1.0f, m_dim, m_blur, // primaries, exposure, dim, blur
+        prim, 1.0f, m_dim, m_blur,       // primaries, exposure, dim, blur
         0.0f, 0.0f, 0.0f, 1.0f           // bgColor (true black, opaque)
     };
     std::memcpy(out.uboMapped, ubo, sizeof(ubo));
+
+    // Thumbnail: same texture, sharp (blur=0), undimmed, exact-fit (its viewport
+    // matches the image aspect, so uvScale=1 shows the whole image, no letterbox).
+    float thumbUbo[16] = {
+        scale, sdr, imageHdr, 0.0f,
+        1.0f, 1.0f, 0.0f, 0.0f,
+        prim, 1.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f
+    };
+    std::memcpy(out.thumbUboMapped, thumbUbo, sizeof(thumbUbo));
 
     vkResetCommandBuffer(out.cmd, 0);
     VkCommandBufferBeginInfo bi{};
@@ -759,6 +783,24 @@ void Renderer::renderOutput(Output &out)
     vkCmdBindDescriptorSets(out.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeLayout,
         0, 1, &out.descriptor, 0, nullptr);
     vkCmdDraw(out.cmd, 3, 1, 0, 0);
+
+    // Sharp thumbnail in a centred sub-viewport sized to the image aspect.
+    if (m_thumb && out.imgW > 0 && out.imgH > 0) {
+        const float ow = float(out.extent.width), oh = float(out.extent.height);
+        float thh = m_thumbFrac * oh;
+        float thw = thh * (float(out.imgW) / float(out.imgH));
+        if (thw > 0.85f * ow) { thw = 0.85f * ow; thh = thw * (float(out.imgH) / float(out.imgW)); }
+        const float tx = (ow - thw) * 0.5f;
+        const float ty = (oh - thh) * 0.5f;
+        VkViewport tvp{ tx, ty, thw, thh, 0.0f, 1.0f };
+        VkRect2D tsc{ { int32_t(tx), int32_t(ty) }, { uint32_t(thw), uint32_t(thh) } };
+        vkCmdSetViewport(out.cmd, 0, 1, &tvp);
+        vkCmdSetScissor(out.cmd, 0, 1, &tsc);
+        vkCmdBindDescriptorSets(out.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeLayout,
+            0, 1, &out.thumbDescriptor, 0, nullptr);
+        vkCmdDraw(out.cmd, 3, 1, 0, 0);
+    }
+
     vkCmdEndRenderPass(out.cmd);
     vkEndCommandBuffer(out.cmd);
 
@@ -799,6 +841,9 @@ void Renderer::destroyOutput(Output &out)
     if (out.uboMapped) vkUnmapMemory(m_device, out.uboMem);
     if (out.ubo) vkDestroyBuffer(m_device, out.ubo, nullptr);
     if (out.uboMem) vkFreeMemory(m_device, out.uboMem, nullptr);
+    if (out.thumbUboMapped) vkUnmapMemory(m_device, out.thumbUboMem);
+    if (out.thumbUbo) vkDestroyBuffer(m_device, out.thumbUbo, nullptr);
+    if (out.thumbUboMem) vkFreeMemory(m_device, out.thumbUboMem, nullptr);
     if (out.surface) vkDestroySurfaceKHR(m_instance, out.surface, nullptr);
     out = Output{};
 }
