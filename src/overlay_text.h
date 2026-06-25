@@ -20,9 +20,26 @@ struct State {
     bool error = false;     // last attempt failed
 };
 
+struct Color {
+    unsigned char r = 255, g = 255, b = 255, a = 255;
+};
+
+// Overlay colours, sourced from the active Hyprland theme (see loadTheme).
+struct Theme {
+    Color text{ 255, 255, 255, 255 };  // clock / date / dots
+    Color accent{ 255, 255, 255, 255 }; // field border
+    Color error{ 235, 90, 90, 255 };    // wrong-password feedback
+    Color shadow{ 0, 0, 0, 150 };       // text shadow
+};
+
+// Read the active theme's colours from ~/.config/themes/current (a dedicated
+// vantalock-colors.conf if present, else the hyprlock-colors.conf already shipped
+// per theme). Falls back to the built-in defaults.
+Theme loadTheme();
+
 // Render the current time (HH:mm), date, and the password field onto a fixed-size
-// transparent canvas, centred. Fixed size keeps the Vulkan texture + descriptors
-// stable across refreshes. Localised via the system locale.
-TextImage renderOverlay(const State &state);
+// transparent canvas. Fixed size keeps the Vulkan texture + descriptors stable
+// across refreshes. Localised via the system locale.
+TextImage renderOverlay(const State &state, const Theme &theme);
 
 } // namespace overlay

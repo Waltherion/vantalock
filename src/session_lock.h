@@ -35,7 +35,7 @@ class SurfaceColor;
 class SessionLock
 {
 public:
-    explicit SessionLock(const HdrImage &image);
+    SessionLock(const HdrImage &image, const overlay::Theme &theme);
     ~SessionLock();
 
     // Connect, lock, and run the event loop until Esc / finished. Returns true on
@@ -92,6 +92,7 @@ private:
     xkb_state *m_xkbState = nullptr;
     std::string m_password; // typed bytes (UTF-8)
     overlay::State m_ostate;
+    overlay::Theme m_theme;
     Authenticator m_auth;
 
     const HdrImage &m_image;

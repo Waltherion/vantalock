@@ -6,6 +6,7 @@
 // de-risks "session-lock + raw Vulkan + wp-color-management" on Hyprland/NVIDIA.
 
 #include "hdr_image.h"
+#include "overlay_text.h"
 #include "session_lock.h"
 
 #include <QDir>
@@ -37,7 +38,7 @@ int main(int argc, char **argv)
 
     if (probeOnly) {
         HdrImage dummy; // probe needs no real image
-        SessionLock lock(dummy);
+        SessionLock lock(dummy, overlay::Theme{});
         const bool ok = lock.probe();
         return ok ? 0 : 1;
     }
@@ -61,7 +62,8 @@ int main(int argc, char **argv)
     std::fprintf(stderr, "vantalock: %dx%d, hdr=%d, kind=%s, primaries=%s\n",
         img.w, img.h, int(img.hdr), hdrKindName(img.kind), primariesName(img.primaries));
 
-    SessionLock lock(img);
+    const overlay::Theme theme = overlay::loadTheme();
+    SessionLock lock(img, theme);
     const bool ok = lock.run();
     std::fprintf(stderr, "vantalock: exit (clean=%d)\n", int(ok));
     return ok ? 0 : 1;

@@ -2,11 +2,14 @@
 
 #include <QColor>
 #include <QDateTime>
+#include <QDir>
+#include <QFile>
 #include <QFont>
 #include <QImage>
 #include <QLocale>
 #include <QPainter>
 #include <QRectF>
+#include <QRegularExpression>
 #include <QString>
 
 #include <cstring>
@@ -19,9 +22,61 @@ namespace {
 // size keeps the GPU texture + descriptor sets stable across refreshes.
 constexpr int kW = 1920;
 constexpr int kH = 1080;
+
+QColor qc(const Color &c) { return QColor(c.r, c.g, c.b, c.a); }
+
+// Parse a hyprlock-style "$name = rgba(RRGGBBAA)" line into a Color.
+bool parseColor(const QString &hex, Color &out)
+{
+    bool ok = false;
+    const uint32_t v = hex.toUInt(&ok, 16);
+    if (!ok || hex.size() != 8)
+        return false;
+    out = { (unsigned char)((v >> 24) & 0xFF), (unsigned char)((v >> 16) & 0xFF),
+            (unsigned char)((v >> 8) & 0xFF), (unsigned char)(v & 0xFF) };
+    return true;
+}
 } // namespace
 
-TextImage renderOverlay(const State &state)
+Theme loadTheme()
+{
+    Theme t;
+    const QString dir = QDir::homePath() + QStringLiteral("/.config/themes/current/");
+    QString path = dir + QStringLiteral("vantalock-colors.conf");
+    if (!QFile::exists(path))
+        path = dir + QStringLiteral("hyprlock-colors.conf");
+
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return t; // defaults
+
+    static const QRegularExpression re(
+        QStringLiteral("\\$(\\w+)\\s*=\\s*rgba\\(([0-9a-fA-F]{8})\\)"));
+    const QString text = QString::fromUtf8(f.readAll());
+    for (const QString &line : text.split('\n')) {
+        const auto m = re.match(line);
+        if (!m.hasMatch())
+            continue;
+        const QString name = m.captured(1);
+        Color c;
+        if (!parseColor(m.captured(2), c))
+            continue;
+        if (name == QStringLiteral("primary") || name == QStringLiteral("text")) {
+            t.text = c;
+            t.accent = c;
+        } else if (name == QStringLiteral("accent")) {
+            t.accent = c;
+        } else if (name == QStringLiteral("error")) {
+            t.error = c;
+        } else if (name == QStringLiteral("shadow")) {
+            c.a = 150; // keep the shadow soft regardless of theme alpha
+            t.shadow = c;
+        }
+    }
+    return t;
+}
+
+TextImage renderOverlay(const State &state, const Theme &theme)
 {
     QImage img(kW, kH, QImage::Format_RGBA8888);
     img.fill(Qt::transparent);
@@ -40,7 +95,7 @@ TextImage renderOverlay(const State &state)
         const QRect br = fm.boundingRect(text);
         const int x = (kW - br.width()) / 2 - br.left();
         const int y = cy - br.center().y();
-        p.setPen(QColor(0, 0, 0, 150));
+        p.setPen(qc(theme.shadow));
         p.drawText(x + 3, y + 3, text); // soft shadow for legibility
         p.setPen(col);
         p.drawText(x, y, text);
@@ -54,14 +109,14 @@ TextImage renderOverlay(const State &state)
     dateFont.setWeight(QFont::Normal);
 
     // Clock + date at the top of the screen.
-    drawCentred(time, timeFont, 150, QColor(255, 255, 255));
-    drawCentred(date, dateFont, 270, QColor(235, 235, 235));
+    drawCentred(time, timeFont, 150, qc(theme.text));
+    drawCentred(date, dateFont, 270, qc(theme.text));
 
     // Password field: a rounded pill near the bottom, with dots for typed
     // characters, or a status line while verifying / after a failure.
     const int fieldW = 460, fieldH = 84;
     const QRectF field((kW - fieldW) / 2.0, 900.0, fieldW, fieldH);
-    const QColor accent = state.error ? QColor(235, 90, 90) : QColor(255, 255, 255);
+    const QColor accent = state.error ? qc(theme.error) : qc(theme.accent);
 
     p.setPen(Qt::NoPen);
     p.setBrush(QColor(0, 0, 0, 110));
@@ -83,8 +138,9 @@ TextImage renderOverlay(const State &state)
     } else if (state.passwordLen == 0) {
         QFont f;
         f.setPointSize(24);
-        drawCentred(QStringLiteral("Enter password"), f, int(field.center().y()),
-                    QColor(200, 200, 200, 180));
+        QColor dim = qc(theme.text);
+        dim.setAlpha(170);
+        drawCentred(QStringLiteral("Enter password"), f, int(field.center().y()), dim);
     } else {
         // Row of dots, capped so a long password stays inside the pill.
         const int shown = state.passwordLen < 16 ? state.passwordLen : 16;

@@ -93,8 +93,9 @@ const wl_output_listener kOutputListener = {
 
 // ---- SessionLock ----------------------------------------------------------
 
-SessionLock::SessionLock(const HdrImage &image)
+SessionLock::SessionLock(const HdrImage &image, const overlay::Theme &theme)
     : m_image(image)
+    , m_theme(theme)
 {
 }
 
@@ -349,7 +350,7 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
             return;
         }
         // Upload the overlay (clock + password field) before any output binds it.
-        const overlay::TextImage ov = overlay::renderOverlay(m_ostate);
+        const overlay::TextImage ov = overlay::renderOverlay(m_ostate, m_theme);
         if (ov.valid())
             m_renderer->uploadOverlay(ov.rgba.data(), ov.w, ov.h);
         m_deviceReady = true;
@@ -392,7 +393,7 @@ void SessionLock::refreshOverlay()
 {
     if (!m_deviceReady)
         return;
-    const overlay::TextImage ov = overlay::renderOverlay(m_ostate);
+    const overlay::TextImage ov = overlay::renderOverlay(m_ostate, m_theme);
     if (ov.valid())
         m_renderer->uploadOverlay(ov.rgba.data(), ov.w, ov.h);
     // Re-render directly (NOT via frame callbacks): on Wayland, requestUpdate from
