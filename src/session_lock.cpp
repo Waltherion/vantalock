@@ -12,11 +12,14 @@
 #include <QJsonObject>
 #include <QProcess>
 
+#include <xkbcommon/xkbcommon.h>
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <poll.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 // ---- C listener trampolines ----------------------------------------------
@@ -44,14 +47,21 @@ void surfConfigure(void *data, ext_session_lock_surface_v1 *, uint32_t serial, u
 }
 const ext_session_lock_surface_v1_listener kSurfaceListener = { surfConfigure };
 
-void kbKeymap(void *, wl_keyboard *, uint32_t, int32_t fd, uint32_t) { if (fd >= 0) ::close(fd); }
+void kbKeymap(void *data, wl_keyboard *, uint32_t, int32_t fd, uint32_t size)
+{
+    static_cast<SessionLock *>(data)->onKeymap(fd, size);
+}
 void kbEnter(void *, wl_keyboard *, uint32_t, wl_surface *, wl_array *) {}
 void kbLeave(void *, wl_keyboard *, uint32_t, wl_surface *) {}
 void kbKey(void *data, wl_keyboard *, uint32_t, uint32_t, uint32_t key, uint32_t state)
 {
     static_cast<SessionLock *>(data)->onKey(key, state);
 }
-void kbModifiers(void *, wl_keyboard *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) {}
+void kbModifiers(void *data, wl_keyboard *, uint32_t, uint32_t depressed, uint32_t latched,
+                 uint32_t locked, uint32_t group)
+{
+    static_cast<SessionLock *>(data)->onModifiers(depressed, latched, locked, group);
+}
 void kbRepeat(void *, wl_keyboard *, int32_t, int32_t) {}
 const wl_keyboard_listener kKeyboardListener = {
     kbKeymap, kbEnter, kbLeave, kbKey, kbModifiers, kbRepeat
@@ -102,6 +112,9 @@ SessionLock::~SessionLock()
     m_outputs.clear();
     m_renderer.reset();
 
+    if (m_xkbState) xkb_state_unref(m_xkbState);
+    if (m_keymap) xkb_keymap_unref(m_keymap);
+    if (m_xkb) xkb_context_unref(m_xkb);
     if (m_keyboard) wl_keyboard_destroy(m_keyboard);
     if (m_seat) wl_seat_destroy(m_seat);
     if (m_lockManager) ext_session_lock_manager_v1_destroy(m_lockManager);
@@ -209,12 +222,105 @@ void SessionLock::onSeatCapabilities(uint32_t caps)
     }
 }
 
+void SessionLock::onKeymap(int32_t fd, uint32_t size)
+{
+    if (fd < 0)
+        return;
+    char *map = static_cast<char *>(mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0));
+    if (map == MAP_FAILED) {
+        ::close(fd);
+        return;
+    }
+    if (!m_xkb)
+        m_xkb = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+    if (m_keymap)
+        xkb_keymap_unref(m_keymap);
+    if (m_xkbState)
+        xkb_state_unref(m_xkbState);
+    m_keymap = xkb_keymap_new_from_string(m_xkb, map, XKB_KEYMAP_FORMAT_TEXT_V1,
+                                          XKB_KEYMAP_COMPILE_NO_FLAGS);
+    m_xkbState = m_keymap ? xkb_state_new(m_keymap) : nullptr;
+    munmap(map, size);
+    ::close(fd);
+}
+
+void SessionLock::onModifiers(uint32_t depressed, uint32_t latched, uint32_t locked, uint32_t group)
+{
+    if (m_xkbState)
+        xkb_state_update_mask(m_xkbState, depressed, latched, locked, 0, 0, group);
+}
+
 void SessionLock::onKey(uint32_t key, uint32_t state)
 {
-    // Fase 0: Esc (evdev keycode 1) unlocks. Real auth comes in Fase 2.
-    if (state == WL_KEYBOARD_KEY_STATE_PRESSED && key == 1) {
-        std::fprintf(stderr, "vantalock: Esc -> unlocking\n");
-        m_running = false;
+    if (state != WL_KEYBOARD_KEY_STATE_PRESSED || !m_xkbState)
+        return;
+    if (m_auth.busy())
+        return; // ignore input while a PAM check is in flight
+
+    const xkb_keycode_t code = key + 8; // evdev -> xkb
+    const xkb_keysym_t sym = xkb_state_key_get_one_sym(m_xkbState, code);
+
+    if (sym == XKB_KEY_Return || sym == XKB_KEY_KP_Enter) {
+        submitPassword();
+        return;
+    }
+    if (sym == XKB_KEY_BackSpace) {
+        if (!m_password.empty()) {
+            // Drop the last UTF-8 character (trailing continuation bytes + lead).
+            size_t i = m_password.size();
+            do { --i; } while (i > 0 && (uint8_t(m_password[i]) & 0xC0) == 0x80);
+            m_password.erase(i);
+            if (m_ostate.passwordLen > 0)
+                m_ostate.passwordLen--;
+            m_ostate.error = false;
+            refreshOverlay();
+        }
+        return;
+    }
+    if (sym == XKB_KEY_Escape) {
+        m_password.clear();
+        m_ostate.passwordLen = 0;
+        m_ostate.error = false;
+        refreshOverlay();
+        return;
+    }
+
+    char buf[64];
+    const int n = xkb_state_key_get_utf8(m_xkbState, code, buf, sizeof(buf));
+    if (n > 0 && (buf[0] != '\0')) {
+        // Ignore control characters (Tab, etc.) below space.
+        if (uint8_t(buf[0]) >= 0x20) {
+            m_password.append(buf, size_t(n));
+            m_ostate.passwordLen++;
+            m_ostate.error = false;
+            refreshOverlay();
+        }
+    }
+}
+
+void SessionLock::submitPassword()
+{
+    if (m_password.empty() || m_auth.busy())
+        return;
+    m_ostate.verifying = true;
+    m_ostate.error = false;
+    refreshOverlay();
+    m_auth.authenticate(m_password);
+}
+
+void SessionLock::onAuthResult()
+{
+    const bool ok = m_auth.consumeResult();
+    m_ostate.verifying = false;
+    m_password.clear();
+    m_ostate.passwordLen = 0;
+    if (ok) {
+        std::fprintf(stderr, "vantalock: authentication succeeded -> unlocking\n");
+        m_running = false; // cleanup unlocks (m_locked -> unlock_and_destroy)
+    } else {
+        std::fprintf(stderr, "vantalock: authentication failed\n");
+        m_ostate.error = true;
+        refreshOverlay();
     }
 }
 
@@ -242,10 +348,10 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
             m_running = false;
             return;
         }
-        // Upload the clock/date overlay before any output binds its descriptor.
-        const overlay::TextImage clock = overlay::renderClock();
-        if (clock.valid())
-            m_renderer->uploadOverlay(clock.rgba.data(), clock.w, clock.h);
+        // Upload the overlay (clock + password field) before any output binds it.
+        const overlay::TextImage ov = overlay::renderOverlay(m_ostate);
+        if (ov.valid())
+            m_renderer->uploadOverlay(ov.rgba.data(), ov.w, ov.h);
         m_deviceReady = true;
     }
 
@@ -282,15 +388,15 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
     }
 }
 
-void SessionLock::refreshClock()
+void SessionLock::refreshOverlay()
 {
     if (!m_deviceReady)
         return;
-    const overlay::TextImage clock = overlay::renderClock();
-    if (clock.valid())
-        m_renderer->uploadOverlay(clock.rgba.data(), clock.w, clock.h);
+    const overlay::TextImage ov = overlay::renderOverlay(m_ostate);
+    if (ov.valid())
+        m_renderer->uploadOverlay(ov.rgba.data(), ov.w, ov.h);
     // Re-render directly (NOT via frame callbacks): on Wayland, requestUpdate from
-    // a timer may never paint. Each configured output redraws with the new clock.
+    // a timer/async path may never paint. Each configured output redraws.
     for (auto &o : m_outputs) {
         if (o->configured)
             m_renderer->renderOutput(o->render);
@@ -399,14 +505,16 @@ bool SessionLock::run()
                 pollTimeout = int(remain);
         }
 
-        struct pollfd pfd{ fd, POLLIN, 0 };
-        const int pr = poll(&pfd, 1, pollTimeout);
+        struct pollfd pfds[2];
+        pfds[0] = { fd, POLLIN, 0 };
+        pfds[1] = { m_auth.eventFd(), POLLIN, 0 };
+        const int pr = poll(pfds, 2, pollTimeout);
         if (pr < 0) {
             wl_display_cancel_read(m_display);
             std::fprintf(stderr, "vantalock: poll error\n");
             break;
         }
-        if (pr > 0 && (pfd.revents & POLLIN)) {
+        if (pr > 0 && (pfds[0].revents & POLLIN)) {
             wl_display_read_events(m_display);
         } else {
             wl_display_cancel_read(m_display);
@@ -416,13 +524,17 @@ bool SessionLock::run()
             break;
         }
 
+        // PAM result ready: unlock on success, show an error otherwise.
+        if (pfds[1].revents & POLLIN)
+            onAuthResult();
+
         // Tick the clock: refresh + re-render when the minute changes.
         std::time_t tt = std::time(nullptr);
         std::tm lt{};
         localtime_r(&tt, &lt);
         if (lt.tm_min != m_lastMinute) {
             m_lastMinute = lt.tm_min;
-            refreshClock();
+            refreshOverlay();
         }
     }
 

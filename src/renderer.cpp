@@ -1009,7 +1009,7 @@ void Renderer::renderOutput(Output &out)
         float thw = thh * (float(out.imgW) / float(out.imgH));
         if (thw > 0.85f * ow) { thw = 0.85f * ow; thh = thw * (float(out.imgH) / float(out.imgW)); }
         const float tx = (ow - thw) * 0.5f;
-        const float ty = (oh - thh) * 0.5f;
+        const float ty = m_thumbY * oh - thh * 0.5f;
         VkViewport tvp{ tx, ty, thw, thh, 0.0f, 1.0f };
         VkRect2D tsc{ { int32_t(tx), int32_t(ty) }, { uint32_t(thw), uint32_t(thh) } };
         vkCmdSetViewport(out.cmd, 0, 1, &tvp);

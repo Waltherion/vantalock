@@ -1,0 +1,5 @@
+# PAM configuration for VantaLock (a screen locker). Mirrors the standard locker
+# setup: authenticate the current user against the system stack. Install to
+# /etc/pam.d/vantalock.
+auth     include  system-auth
+account  include  system-auth

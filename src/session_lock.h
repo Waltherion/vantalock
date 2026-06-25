@@ -5,7 +5,13 @@
 #include <string>
 #include <vector>
 
+#include "auth.h"
+#include "overlay_text.h"
 #include "renderer.h"
+
+struct xkb_context;
+struct xkb_keymap;
+struct xkb_state;
 
 struct HdrImage;
 struct wl_display;
@@ -46,7 +52,9 @@ public:
     void onLocked();
     void onFinished();
     void onSeatCapabilities(uint32_t caps);
+    void onKeymap(int32_t fd, uint32_t size);
     void onKey(uint32_t key, uint32_t state);
+    void onModifiers(uint32_t depressed, uint32_t latched, uint32_t locked, uint32_t group);
 
     struct OutputCtx {
         SessionLock *owner = nullptr;
@@ -72,9 +80,19 @@ private:
     std::map<std::string, bool> m_hdrByName;
     bool m_hdrQueried = false;
 
-    // Re-render the clock overlay + all outputs when the minute changes.
-    void refreshClock();
+    // Re-render the overlay (clock + password field) + all outputs.
+    void refreshOverlay();
+    void submitPassword();
+    void onAuthResult();
     int m_lastMinute = -1;
+
+    // Keyboard / password state.
+    xkb_context *m_xkb = nullptr;
+    xkb_keymap *m_keymap = nullptr;
+    xkb_state *m_xkbState = nullptr;
+    std::string m_password; // typed bytes (UTF-8)
+    overlay::State m_ostate;
+    Authenticator m_auth;
 
     const HdrImage &m_image;
 

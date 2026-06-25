@@ -21,6 +21,9 @@ pkg_get_variable(WAYLAND_PROTOCOLS_DIR wayland-protocols pkgdatadir)
 find_package(Vulkan REQUIRED)
 find_program(GLSLC NAMES glslc REQUIRED)
 
+pkg_check_modules(Xkbcommon REQUIRED IMPORTED_TARGET xkbcommon)
+find_library(PAM_LIB NAMES pam REQUIRED)
+
 # Image libraries for the HDR decode pipeline (reused from vantaviewer).
 find_library(UHDR_LIB NAMES uhdr ultrahdr REQUIRED)
 pkg_check_modules(Avif REQUIRED IMPORTED_TARGET libavif)
@@ -69,6 +72,7 @@ add_executable(vantalock
     src/cm_tag.cpp
     src/hdr_image.cpp
     src/overlay_text.cpp
+    src/auth.cpp
     ${CM_SOURCES}
     ${LOCK_SOURCES}
 )
@@ -88,8 +92,11 @@ target_link_libraries(vantalock PRIVATE
     PkgConfig::Lcms2
     PkgConfig::Jxl
     PkgConfig::Heif
+    PkgConfig::Xkbcommon
     ${UHDR_LIB}
+    ${PAM_LIB}
 )
 
 include(GNUInstallDirs)
 install(TARGETS vantalock RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES pam/vantalock DESTINATION ${CMAKE_INSTALL_FULL_SYSCONFDIR}/pam.d)

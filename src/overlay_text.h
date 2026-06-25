@@ -13,9 +13,16 @@ struct TextImage {
     bool valid() const { return w > 0 && h > 0 && rgba.size() == size_t(w) * h * 4; }
 };
 
-// Render the current time (HH:MM) and date onto a fixed-size transparent canvas,
-// centred. Fixed size keeps the Vulkan texture + descriptors stable across the
-// per-minute refresh. Localised via the system locale.
-TextImage renderClock();
+// State of the password field, reflected in the rendered overlay.
+struct State {
+    int passwordLen = 0;  // number of typed characters (shown as dots)
+    bool verifying = false; // PAM check in progress
+    bool error = false;     // last attempt failed
+};
+
+// Render the current time (HH:mm), date, and the password field onto a fixed-size
+// transparent canvas, centred. Fixed size keeps the Vulkan texture + descriptors
+// stable across refreshes. Localised via the system locale.
+TextImage renderOverlay(const State &state);
 
 } // namespace overlay
