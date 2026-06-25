@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "auth.h"
+#include "config.h"
 #include "overlay_text.h"
 #include "renderer.h"
 
@@ -35,7 +36,7 @@ class SurfaceColor;
 class SessionLock
 {
 public:
-    SessionLock(const HdrImage &image, const overlay::Theme &theme);
+    SessionLock(const HdrImage &image, const Config &config);
     ~SessionLock();
 
     // Connect, lock, and run the event loop until Esc / finished. Returns true on
@@ -92,7 +93,7 @@ private:
     xkb_state *m_xkbState = nullptr;
     std::string m_password; // typed bytes (UTF-8)
     overlay::State m_ostate;
-    overlay::Theme m_theme;
+    Config m_config;
     Authenticator m_auth;
 
     const HdrImage &m_image;

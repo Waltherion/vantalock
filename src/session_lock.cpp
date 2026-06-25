@@ -93,9 +93,9 @@ const wl_output_listener kOutputListener = {
 
 // ---- SessionLock ----------------------------------------------------------
 
-SessionLock::SessionLock(const HdrImage &image, const overlay::Theme &theme)
+SessionLock::SessionLock(const HdrImage &image, const Config &config)
     : m_image(image)
-    , m_theme(theme)
+    , m_config(config)
 {
 }
 
@@ -350,7 +350,7 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
             return;
         }
         // Upload the overlay (clock + password field) before any output binds it.
-        const overlay::TextImage ov = overlay::renderOverlay(m_ostate, m_theme);
+        const overlay::TextImage ov = overlay::renderOverlay(m_ostate, m_config);
         if (ov.valid())
             m_renderer->uploadOverlay(ov.rgba.data(), ov.w, ov.h);
         m_deviceReady = true;
@@ -393,7 +393,7 @@ void SessionLock::refreshOverlay()
 {
     if (!m_deviceReady)
         return;
-    const overlay::TextImage ov = overlay::renderOverlay(m_ostate, m_theme);
+    const overlay::TextImage ov = overlay::renderOverlay(m_ostate, m_config);
     if (ov.valid())
         m_renderer->uploadOverlay(ov.rgba.data(), ov.w, ov.h);
     // Re-render directly (NOT via frame callbacks): on Wayland, requestUpdate from
@@ -421,7 +421,7 @@ bool SessionLock::probe()
     std::fprintf(stderr, "vantalock: ext_session_lock_manager_v1 %s\n",
         m_lockManager ? "present" : "MISSING");
 
-    m_renderer = std::make_unique<Renderer>(true);
+    m_renderer = std::make_unique<Renderer>(m_config);
     if (!m_renderer->ok())
         return false;
 
@@ -458,7 +458,7 @@ bool SessionLock::run()
         return false;
     }
 
-    m_renderer = std::make_unique<Renderer>(true /* wantHdr */);
+    m_renderer = std::make_unique<Renderer>(m_config);
     if (!m_renderer->ok()) {
         std::fprintf(stderr, "vantalock: Vulkan instance init failed\n");
         return false;

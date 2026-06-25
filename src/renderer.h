@@ -6,6 +6,7 @@
 #include <vulkan/vulkan.h>
 
 struct HdrImage;
+struct Config;
 struct wl_display;
 struct wl_surface;
 
@@ -60,7 +61,7 @@ public:
         float dim = 1.0f;
     };
 
-    explicit Renderer(bool wantHdr);
+    explicit Renderer(const Config &cfg);
     ~Renderer();
 
     bool ok() const { return m_instance != VK_NULL_HANDLE; }
@@ -142,7 +143,8 @@ private:
     bool m_deviceReady = false;
     float m_dim = 0.5f;   // background dim multiplier (linear); VANTALOCK_DIM
     float m_blur = 0.02f; // background blur radius in uv units; VANTALOCK_BLUR
-    bool m_thumb = true;       // draw the sharp thumbnail; VANTALOCK_THUMB=0 disables
-    float m_thumbFrac = 0.24f; // thumbnail height as fraction of output; VANTALOCK_THUMB_HEIGHT
-    float m_thumbY = 0.57f;    // thumbnail vertical centre (just above the password field)
+    bool m_thumb = true;        // draw the sharp thumbnail
+    float m_thumbFrac = 0.24f;  // thumbnail height as fraction of output
+    float m_thumbY = 0.55f;     // thumbnail vertical centre
+    float m_thumbRadius = 0.0f; // corner rounding, fraction of thumb height (0 = square)
 };

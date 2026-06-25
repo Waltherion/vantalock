@@ -26,6 +26,7 @@ layout(std140, binding = 0) uniform U {
     float dim;       // dim multiplier in linear (1.0 = none); for lock dimming
     float blur;      // gaussian blur radius in texture-uv units (0 = sharp)
     vec4 bgColor;    // letterbox background: linear rgb + alpha
+    vec4 rounding;   // xy = corner radius in window-uv (per axis), z>0.5 = enabled
 } u;
 
 layout(binding = 1) uniform sampler2D tex;
@@ -86,6 +87,17 @@ vec3 srgbEncode(vec3 c)
 
 void main()
 {
+    // Rounded corners (thumbnail): discard fragments past the corner radius so the
+    // already-drawn background shows through. Radii are per-axis in window-uv.
+    if (u.rounding.z > 0.5) {
+        vec2 q = abs(v_uv - 0.5) - (vec2(0.5) - u.rounding.xy);
+        if (q.x > 0.0 && q.y > 0.0) {
+            vec2 d = q / max(u.rounding.xy, vec2(1e-5));
+            if (dot(d, d) > 1.0)
+                discard;
+        }
+    }
+
     vec2 duv = (v_uv - 0.5) * u.uvScale + 0.5 + u.uvOffset;
 
     if (duv.x < 0.0 || duv.x > 1.0 || duv.y < 0.0 || duv.y > 1.0) {

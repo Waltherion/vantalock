@@ -1,5 +1,6 @@
 #include "renderer.h"
 
+#include "config.h"
 #include "hdr_image.h"
 
 #include <vulkan/vulkan_wayland.h>
@@ -43,17 +44,14 @@ bool envOn(const char *name, bool dflt)
 }
 } // namespace
 
-Renderer::Renderer(bool wantHdr)
-    : m_wantHdr(wantHdr)
+Renderer::Renderer(const Config &cfg)
 {
-    if (const char *d = std::getenv("VANTALOCK_DIM"))
-        m_dim = float(std::atof(d));
-    if (const char *b = std::getenv("VANTALOCK_BLUR"))
-        m_blur = float(std::atof(b));
-    if (const char *t = std::getenv("VANTALOCK_THUMB"))
-        m_thumb = !(t[0] == '0' && t[1] == '\0');
-    if (const char *th = std::getenv("VANTALOCK_THUMB_HEIGHT"))
-        m_thumbFrac = float(std::atof(th));
+    m_blur = cfg.blur;
+    m_dim = cfg.dim;
+    m_thumb = cfg.thumbShow;
+    m_thumbFrac = cfg.thumbHeight;
+    m_thumbY = cfg.thumbY;
+    m_thumbRadius = cfg.thumbRadius;
 
     VkApplicationInfo app{};
     app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -743,7 +741,7 @@ bool Renderer::createUboSet(VkBuffer &buf, VkDeviceMemory &mem, void *&mapped, V
 {
     VkBufferCreateInfo bi{};
     bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bi.size = 16 * sizeof(float);
+    bi.size = 20 * sizeof(float); // present UBO is 20 floats (incl. rounding vec4)
     bi.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     VKCHECK(vkCreateBuffer(m_device, &bi, nullptr, &buf), "ubo buffer");
@@ -956,21 +954,32 @@ void Renderer::renderOutput(Output &out)
     const float imageHdr = out.imgHdr ? 1.0f : 0.0f;
     const float prim = float(out.imgPrimaries);
 
-    float ubo[16] = {
+    float ubo[20] = {
         scale, sdr, imageHdr, 0.0f,      // scale, sdr, imageHdr, rot
         usx, usy, 0.0f, 0.0f,            // uvScale, uvOffset
         prim, 1.0f, m_dim, m_blur,       // primaries, exposure, dim, blur
-        0.0f, 0.0f, 0.0f, 1.0f           // bgColor (true black, opaque)
+        0.0f, 0.0f, 0.0f, 1.0f,          // bgColor (true black, opaque)
+        0.0f, 0.0f, 0.0f, 0.0f           // rounding (disabled for background)
     };
     std::memcpy(out.uboMapped, ubo, sizeof(ubo));
 
     // Thumbnail: same texture, sharp (blur=0), undimmed, exact-fit (its viewport
     // matches the image aspect, so uvScale=1 shows the whole image, no letterbox).
-    float thumbUbo[16] = {
+    // Corner rounding: radius is a fraction of the thumb height; convert to per-axis
+    // window-uv radii so the corners read as circular despite the rect's aspect.
+    float rr = m_thumbRadius; // fraction of height
+    if (rr > 0.5f) rr = 0.5f;
+    const float aspect = (out.imgW > 0 && out.imgH > 0)
+        ? float(out.imgW) / float(out.imgH) : 1.0f;
+    const float ry = rr;             // uv-y radius (fraction of height)
+    const float rx = rr / aspect;    // uv-x radius (narrower because width > height)
+    const float roundEnable = (m_thumbRadius > 0.0001f) ? 1.0f : 0.0f;
+    float thumbUbo[20] = {
         scale, sdr, imageHdr, 0.0f,
         1.0f, 1.0f, 0.0f, 0.0f,
         prim, 1.0f, 1.0f, 0.0f,
-        0.0f, 0.0f, 0.0f, 1.0f
+        0.0f, 0.0f, 0.0f, 1.0f,
+        rx, ry, roundEnable, 0.0f        // rounding
     };
     std::memcpy(out.thumbUboMapped, thumbUbo, sizeof(thumbUbo));
 

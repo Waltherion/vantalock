@@ -1,5 +1,7 @@
 #include "overlay_text.h"
 
+#include "config.h"
+
 #include <QColor>
 #include <QDateTime>
 #include <QDir>
@@ -12,6 +14,7 @@
 #include <QRegularExpression>
 #include <QString>
 
+#include <cstdlib>
 #include <cstring>
 
 namespace overlay {
@@ -76,75 +79,79 @@ Theme loadTheme()
     return t;
 }
 
-TextImage renderOverlay(const State &state, const Theme &theme)
+TextImage renderOverlay(const State &state, const Config &cfg)
 {
     QImage img(kW, kH, QImage::Format_RGBA8888);
     img.fill(Qt::transparent);
 
     const QDateTime now = QDateTime::currentDateTime();
     const QString time = now.time().toString(QStringLiteral("HH:mm"));
-    const QString date = QLocale(QLocale::English).toString(now.date(), QStringLiteral("dddd, d MMMM"));
+    const QLocale loc(QLocale::English);
+    const QString weekday = loc.toString(now.date(), QStringLiteral("dddd"));
+    const QString date = loc.toString(now.date(), QStringLiteral("d MMMM yyyy"));
+
+    const QString family = QString::fromStdString(cfg.fontFamily);
+    auto font = [&](int pt, QFont::Weight w) {
+        QFont f;
+        if (!family.isEmpty())
+            f.setFamily(family);
+        f.setPointSize(pt);
+        f.setWeight(w);
+        return f;
+    };
 
     QPainter p(&img);
     p.setRenderHint(QPainter::Antialiasing, true);
     p.setRenderHint(QPainter::TextAntialiasing, true);
 
-    auto drawCentred = [&](const QString &text, const QFont &font, int cy, const QColor &col) {
-        p.setFont(font);
-        const QFontMetrics fm(font);
+    const QColor shadow = qc(cfg.shadow);
+    auto drawCentred = [&](const QString &text, const QFont &fnt, int cy, const QColor &col) {
+        p.setFont(fnt);
+        const QFontMetrics fm(fnt);
         const QRect br = fm.boundingRect(text);
         const int x = (kW - br.width()) / 2 - br.left();
         const int y = cy - br.center().y();
-        p.setPen(qc(theme.shadow));
+        p.setPen(shadow);
         p.drawText(x + 3, y + 3, text); // soft shadow for legibility
         p.setPen(col);
         p.drawText(x, y, text);
     };
 
-    QFont timeFont;
-    timeFont.setPointSize(120);
-    timeFont.setWeight(QFont::DemiBold);
-    QFont dateFont;
-    dateFont.setPointSize(40);
-    dateFont.setWeight(QFont::Normal);
+    // Clock at the top, then weekday on its own line, then date + year below.
+    drawCentred(time, font(cfg.timeSize, QFont::DemiBold), int(cfg.timeY * kH), qc(cfg.text));
+    drawCentred(weekday, font(cfg.weekdaySize, QFont::Normal), int(cfg.weekdayY * kH), qc(cfg.text));
+    drawCentred(date, font(cfg.dateSize, QFont::Normal), int(cfg.dateY * kH), qc(cfg.text));
 
-    // Clock + date at the top of the screen.
-    drawCentred(time, timeFont, 150, qc(theme.text));
-    drawCentred(date, dateFont, 270, qc(theme.text));
-
-    // Password field: a rounded pill near the bottom, with dots for typed
+    // Password field: a rounded pill at cfg.fieldY (top), with dots for typed
     // characters, or a status line while verifying / after a failure.
-    const int fieldW = 460, fieldH = 84;
-    const QRectF field((kW - fieldW) / 2.0, 900.0, fieldW, fieldH);
-    const QColor accent = state.error ? qc(theme.error) : qc(theme.accent);
+    const int fieldW = cfg.fieldW, fieldH = cfg.fieldH;
+    const QRectF field((kW - fieldW) / 2.0, cfg.fieldY * kH, fieldW, fieldH);
+    const QColor accent = state.error ? qc(cfg.error) : qc(cfg.accent);
 
     p.setPen(Qt::NoPen);
     p.setBrush(QColor(0, 0, 0, 110));
     p.drawRoundedRect(field, fieldH / 2.0, fieldH / 2.0);
     QPen border(QColor(accent.red(), accent.green(), accent.blue(), 180));
-    border.setWidth(3);
+    border.setWidth(2);
     p.setPen(border);
     p.setBrush(Qt::NoBrush);
     p.drawRoundedRect(field, fieldH / 2.0, fieldH / 2.0);
 
     if (state.verifying) {
-        QFont f;
-        f.setPointSize(24);
-        drawCentred(QStringLiteral("Verifying…"), f, int(field.center().y()), accent);
+        drawCentred(QStringLiteral("Verifying…"), font(cfg.fieldFontSize, QFont::Normal),
+                    int(field.center().y()), accent);
     } else if (state.error && state.passwordLen == 0) {
-        QFont f;
-        f.setPointSize(24);
-        drawCentred(QStringLiteral("Wrong password"), f, int(field.center().y()), accent);
+        drawCentred(QStringLiteral("Wrong password"), font(cfg.fieldFontSize, QFont::Normal),
+                    int(field.center().y()), accent);
     } else if (state.passwordLen == 0) {
-        QFont f;
-        f.setPointSize(24);
-        QColor dim = qc(theme.text);
+        QColor dim = qc(cfg.text);
         dim.setAlpha(170);
-        drawCentred(QStringLiteral("Enter password"), f, int(field.center().y()), dim);
+        drawCentred(QStringLiteral("Enter password"), font(cfg.fieldFontSize, QFont::Normal),
+                    int(field.center().y()), dim);
     } else {
         // Row of dots, capped so a long password stays inside the pill.
         const int shown = state.passwordLen < 16 ? state.passwordLen : 16;
-        const double r = 9.0, gap = 26.0;
+        const double r = fieldH * 0.11, gap = fieldH * 0.34;
         const double totalW = (shown - 1) * gap;
         double x = field.center().x() - totalW / 2.0;
         const double y = field.center().y();

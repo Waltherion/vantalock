@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <vector>
 
+struct Config;
+
 namespace overlay {
 
 // A CPU-rendered RGBA8 (sRGB, non-premultiplied) image for blitting as an overlay.
@@ -37,9 +39,9 @@ struct Theme {
 // per theme). Falls back to the built-in defaults.
 Theme loadTheme();
 
-// Render the current time (HH:mm), date, and the password field onto a fixed-size
-// transparent canvas. Fixed size keeps the Vulkan texture + descriptors stable
-// across refreshes. Localised via the system locale.
-TextImage renderOverlay(const State &state, const Theme &theme);
+// Render the time (HH:mm), weekday + date lines, and the password field onto a
+// fixed-size transparent canvas using the given config (fonts, colours, layout).
+// Fixed size keeps the Vulkan texture + descriptors stable across refreshes.
+TextImage renderOverlay(const State &state, const Config &cfg);
 
 } // namespace overlay

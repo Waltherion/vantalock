@@ -5,8 +5,8 @@
 // OLED, on every output. Esc unlocks. No authentication yet — this build only
 // de-risks "session-lock + raw Vulkan + wp-color-management" on Hyprland/NVIDIA.
 
+#include "config.h"
 #include "hdr_image.h"
-#include "overlay_text.h"
 #include "session_lock.h"
 
 #include <QDir>
@@ -38,7 +38,7 @@ int main(int argc, char **argv)
 
     if (probeOnly) {
         HdrImage dummy; // probe needs no real image
-        SessionLock lock(dummy, overlay::Theme{});
+        SessionLock lock(dummy, Config{});
         const bool ok = lock.probe();
         return ok ? 0 : 1;
     }
@@ -70,8 +70,8 @@ int main(int argc, char **argv)
             img.w, img.h, int(img.hdr), hdrKindName(img.kind), primariesName(img.primaries));
     }
 
-    const overlay::Theme theme = overlay::loadTheme();
-    SessionLock lock(img, theme);
+    const Config cfg = Config::load();
+    SessionLock lock(img, cfg);
     const bool ok = lock.run();
     std::fprintf(stderr, "vantalock: exit (clean=%d)\n", int(ok));
     return ok ? 0 : 1;

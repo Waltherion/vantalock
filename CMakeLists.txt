@@ -72,6 +72,7 @@ add_executable(vantalock
     src/cm_tag.cpp
     src/hdr_image.cpp
     src/overlay_text.cpp
+    src/config.cpp
     src/auth.cpp
     ${CM_SOURCES}
     ${LOCK_SOURCES}
