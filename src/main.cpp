@@ -48,19 +48,27 @@ int main(int argc, char **argv)
         path = QDir::homePath() + QStringLiteral("/.local/state/vantapaper/wallpapers/DP-1");
     }
 
-    if (!QFileInfo::exists(path)) {
+    HdrImage img;
+    if (QFileInfo::exists(path)) {
+        std::fprintf(stderr, "vantalock: decoding %s\n", qPrintable(path));
+        img = decodeImage(path);
+    } else {
         std::fprintf(stderr, "vantalock: image not found: %s\n", qPrintable(path));
-        return 2;
     }
 
-    std::fprintf(stderr, "vantalock: decoding %s\n", qPrintable(path));
-    HdrImage img = decodeImage(path);
+    // A lock screen must ALWAYS lock. If the wallpaper is missing or fails to
+    // decode, fall back to a 1x1 black image (black background, no thumbnail) so
+    // the session still locks rather than the process exiting unlocked.
     if (!img.valid()) {
-        std::fprintf(stderr, "vantalock: failed to decode %s\n", qPrintable(path));
-        return 2;
+        std::fprintf(stderr, "vantalock: no wallpaper; locking with a black background\n");
+        img = HdrImage{};
+        img.w = 1;
+        img.h = 1;
+        img.rgba16f = { 0x0000, 0x0000, 0x0000, 0x3C00 }; // RGBA fp16: black, alpha 1.0
+    } else {
+        std::fprintf(stderr, "vantalock: %dx%d, hdr=%d, kind=%s, primaries=%s\n",
+            img.w, img.h, int(img.hdr), hdrKindName(img.kind), primariesName(img.primaries));
     }
-    std::fprintf(stderr, "vantalock: %dx%d, hdr=%d, kind=%s, primaries=%s\n",
-        img.w, img.h, int(img.hdr), hdrKindName(img.kind), primariesName(img.primaries));
 
     const overlay::Theme theme = overlay::loadTheme();
     SessionLock lock(img, theme);

@@ -1001,7 +1001,8 @@ void Renderer::renderOutput(Output &out)
     vkCmdDraw(out.cmd, 3, 1, 0, 0);
 
     // Sharp thumbnail in a centred sub-viewport sized to the image aspect.
-    if (m_thumb && out.imgW > 0 && out.imgH > 0) {
+    // Skipped for the 1x1 black fallback image (no real wallpaper).
+    if (m_thumb && out.imgW > 1 && out.imgH > 1) {
         const float ow = float(out.extent.width), oh = float(out.extent.height);
         float thh = m_thumbFrac * oh;
         float thw = thh * (float(out.imgW) / float(out.imgH));
