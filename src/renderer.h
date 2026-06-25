@@ -108,4 +108,6 @@ private:
 
     bool m_wantHdr = true;
     bool m_deviceReady = false;
+    float m_dim = 0.5f;   // background dim multiplier (linear); VANTALOCK_DIM
+    float m_blur = 0.02f; // background blur radius in uv units; VANTALOCK_BLUR
 };

@@ -24,9 +24,32 @@ layout(std140, binding = 0) uniform U {
     float primaries; // 0 = BT.709, 1 = BT.2020, 2 = Display-P3 (convert to BT.709)
     float exposure;  // linear multiplier (2^EV); 1.0 = no change
     float dim;       // dim multiplier in linear (1.0 = none); for lock dimming
-    float _pad2;
+    float blur;      // gaussian blur radius in texture-uv units (0 = sharp)
     vec4 bgColor;    // letterbox background: linear rgb + alpha
 } u;
+
+layout(binding = 1) uniform sampler2D tex;
+
+// Cheap multi-tap gaussian blur around a texture coordinate. The lock screen is
+// rendered once, so the tap count is free; the radius is in texture-uv units.
+const int BLUR_R = 6;
+vec3 sampleBlurred(vec2 uv)
+{
+    if (u.blur <= 0.0)
+        return texture(tex, uv).rgb;
+    const float sigma = float(BLUR_R) * 0.5;
+    const float step = u.blur / float(BLUR_R);
+    vec3 sum = vec3(0.0);
+    float wsum = 0.0;
+    for (int y = -BLUR_R; y <= BLUR_R; ++y) {
+        for (int x = -BLUR_R; x <= BLUR_R; ++x) {
+            float w = exp(-float(x * x + y * y) / (2.0 * sigma * sigma));
+            sum += texture(tex, uv + vec2(float(x), float(y)) * step).rgb * w;
+            wsum += w;
+        }
+    }
+    return sum / wsum;
+}
 
 // Linear BT.2020 -> linear BT.709 primaries.
 vec3 bt2020ToBt709(vec3 c)
@@ -45,8 +68,6 @@ vec3 p3ToBt709(vec3 c)
         -0.042057 * c.r + 1.042057 * c.g + 0.000000 * c.b,
         -0.019638 * c.r - 0.078636 * c.g + 1.098274 * c.b);
 }
-
-layout(binding = 1) uniform sampler2D tex;
 
 // Soft highlight roll-off: linear below the knee, asymptotes to 1.0 above it.
 float rolloff(float v)
@@ -80,7 +101,7 @@ void main()
     else if (rot == 3) iuv = vec2(1.0 - duv.y, duv.x);
     else               iuv = duv;
 
-    vec3 color = texture(tex, iuv).rgb;
+    vec3 color = sampleBlurred(iuv);
 
     if (u.primaries > 1.5)
         color = max(p3ToBt709(color), vec3(0.0));

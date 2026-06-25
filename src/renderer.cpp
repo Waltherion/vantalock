@@ -40,6 +40,11 @@ bool envOn(const char *name, bool dflt)
 Renderer::Renderer(bool wantHdr)
     : m_wantHdr(wantHdr)
 {
+    if (const char *d = std::getenv("VANTALOCK_DIM"))
+        m_dim = float(std::atof(d));
+    if (const char *b = std::getenv("VANTALOCK_BLUR"))
+        m_blur = float(std::atof(b));
+
     VkApplicationInfo app{};
     app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     app.pApplicationName = "vantalock";
@@ -724,7 +729,7 @@ void Renderer::renderOutput(Output &out)
         out.imgHdr ? 1.0f : 0.0f,        // imageHdr
         0.0f,                            // rot
         usx, usy, 0.0f, 0.0f,            // uvScale, uvOffset
-        float(out.imgPrimaries), 1.0f, out.dim, 0.0f, // primaries, exposure, dim, pad
+        float(out.imgPrimaries), 1.0f, m_dim, m_blur, // primaries, exposure, dim, blur
         0.0f, 0.0f, 0.0f, 1.0f           // bgColor (true black, opaque)
     };
     std::memcpy(out.uboMapped, ubo, sizeof(ubo));
