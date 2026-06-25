@@ -195,12 +195,18 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
             return;
         }
         // Tag the surface BEFORE the first commit (present) so true black holds.
-        ctx->color = std::make_unique<cm::SurfaceColor>(m_display, ctx->surface);
-        if (ctx->color->valid()) {
-            if (m_renderer->hdrActive() && ctx->color->supportsScrgb())
-                ctx->color->setWindowsScrgb();
-            else
-                ctx->color->setSrgb();
+        // Default OFF: the Vulkan WSI already propagates the swapchain's scRGB
+        // colour space, and a second image-description on the same wl_surface can
+        // be a protocol error. Enable VANTALOCK_CM_TAG=1 to force a manual tag if
+        // black still looks grey (matches vantapaper/vantaviewer's Qt path).
+        if (std::getenv("VANTALOCK_CM_TAG")) {
+            ctx->color = std::make_unique<cm::SurfaceColor>(m_display, ctx->surface);
+            if (ctx->color->valid()) {
+                if (m_renderer->hdrActive() && ctx->color->supportsScrgb())
+                    ctx->color->setWindowsScrgb();
+                else
+                    ctx->color->setSrgb();
+            }
         }
         ctx->configured = true;
         m_renderer->renderOutput(ctx->render);
