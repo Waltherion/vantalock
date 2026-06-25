@@ -81,10 +81,20 @@ void Authenticator::run(std::string password)
     pam_handle_t *h = nullptr;
 
     int r = pam_start(m_service.c_str(), m_user.c_str(), &conv, &h);
-    if (r == PAM_SUCCESS)
-        r = pam_authenticate(h, 0);
-    if (r == PAM_SUCCESS)
-        r = pam_acct_mgmt(h, 0);
+    if (r != PAM_SUCCESS) {
+        std::fprintf(stderr, "vantalock: pam_start(service=%s, user=%s) failed: %s\n",
+            m_service.c_str(), m_user.c_str(), pam_strerror(h, r));
+    } else {
+        const int ra = pam_authenticate(h, 0);
+        std::fprintf(stderr, "vantalock: pam_authenticate (%d chars) -> %s\n",
+            int(pw.size()), pam_strerror(h, ra));
+        r = ra;
+        if (r == PAM_SUCCESS) {
+            const int rc = pam_acct_mgmt(h, 0);
+            std::fprintf(stderr, "vantalock: pam_acct_mgmt -> %s\n", pam_strerror(h, rc));
+            r = rc;
+        }
+    }
     if (h)
         pam_end(h, r);
 

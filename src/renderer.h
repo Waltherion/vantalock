@@ -143,8 +143,6 @@ private:
     float m_dim = 0.5f;   // background dim multiplier (linear); VANTALOCK_DIM
     float m_blur = 0.02f; // background blur radius in uv units; VANTALOCK_BLUR
     bool m_thumb = true;       // draw the sharp thumbnail; VANTALOCK_THUMB=0 disables
-    float m_thumbFrac = 0.22f; // thumbnail height as fraction of output; VANTALOCK_THUMB_HEIGHT
-    float m_thumbY = 0.21f;    // thumbnail vertical centre as fraction of output height
-    float m_clockFrac = 0.42f; // overlay block height as fraction of output; VANTALOCK_CLOCK_HEIGHT
-    float m_clockY = 0.55f;    // overlay vertical centre as fraction of output height
+    float m_thumbFrac = 0.24f; // thumbnail height as fraction of output; VANTALOCK_THUMB_HEIGHT
+    float m_thumbY = 0.57f;    // thumbnail vertical centre (just above the password field)
 };

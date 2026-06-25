@@ -54,8 +54,6 @@ Renderer::Renderer(bool wantHdr)
         m_thumb = !(t[0] == '0' && t[1] == '\0');
     if (const char *th = std::getenv("VANTALOCK_THUMB_HEIGHT"))
         m_thumbFrac = float(std::atof(th));
-    if (const char *ch = std::getenv("VANTALOCK_CLOCK_HEIGHT"))
-        m_clockFrac = float(std::atof(ch));
 
     VkApplicationInfo app{};
     app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -1019,23 +1017,17 @@ void Renderer::renderOutput(Output &out)
         vkCmdDraw(out.cmd, 3, 1, 0, 0);
     }
 
-    // Overlay (clock/date): an alpha-blended quad placed in NDC, full viewport.
+    // Overlay (clock/date/password): a full-screen alpha-blended quad. UI is
+    // positioned within the canvas itself (clock top, password bottom).
     if (m_overlayReady && out.overlayPipeline && out.overlayDescriptor && out.overlayVbo) {
         float ovUbo[16] = { scale, sdr, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
         std::memcpy(out.overlayUboMapped, ovUbo, sizeof(ovUbo));
 
-        const float ow = float(out.extent.width), oh = float(out.extent.height);
-        const float ch = m_clockFrac * oh;
-        const float cw = ch * (float(m_overlayW) / float(m_overlayH));
-        const float cx0 = (ow - cw) * 0.5f, cx1 = cx0 + cw;
-        const float cy0 = m_clockY * oh - ch * 0.5f, cy1 = cy0 + ch;
-        auto ndcX = [&](float px) { return px / ow * 2.0f - 1.0f; };
-        auto ndcY = [&](float py) { return py / oh * 2.0f - 1.0f; };
         const float verts[16] = {
-            ndcX(cx0), ndcY(cy0), 0.0f, 0.0f, // TL
-            ndcX(cx1), ndcY(cy0), 1.0f, 0.0f, // TR
-            ndcX(cx0), ndcY(cy1), 0.0f, 1.0f, // BL
-            ndcX(cx1), ndcY(cy1), 1.0f, 1.0f, // BR
+            -1.0f, -1.0f, 0.0f, 0.0f, // TL
+             1.0f, -1.0f, 1.0f, 0.0f, // TR
+            -1.0f,  1.0f, 0.0f, 1.0f, // BL
+             1.0f,  1.0f, 1.0f, 1.0f, // BR
         };
         std::memcpy(out.overlayVboMapped, verts, sizeof(verts));
 

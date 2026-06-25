@@ -14,10 +14,11 @@
 namespace overlay {
 
 namespace {
-// Fixed canvas: text is centred within it, transparent margins are invisible. A
-// constant size means the GPU texture + descriptor sets never need rebuilding.
-constexpr int kW = 1200;
-constexpr int kH = 820;
+// Full-screen 16:9 canvas drawn over the whole output: UI elements are placed at
+// absolute positions (clock at the top, password field near the bottom). Fixed
+// size keeps the GPU texture + descriptor sets stable across refreshes.
+constexpr int kW = 1920;
+constexpr int kH = 1080;
 } // namespace
 
 TextImage renderOverlay(const State &state)
@@ -27,7 +28,7 @@ TextImage renderOverlay(const State &state)
 
     const QDateTime now = QDateTime::currentDateTime();
     const QString time = now.time().toString(QStringLiteral("HH:mm"));
-    const QString date = QLocale::system().toString(now.date(), QStringLiteral("dddd d. MMMM"));
+    const QString date = QLocale(QLocale::English).toString(now.date(), QStringLiteral("dddd, d MMMM"));
 
     QPainter p(&img);
     p.setRenderHint(QPainter::Antialiasing, true);
@@ -46,19 +47,20 @@ TextImage renderOverlay(const State &state)
     };
 
     QFont timeFont;
-    timeFont.setPointSize(150);
+    timeFont.setPointSize(120);
     timeFont.setWeight(QFont::DemiBold);
     QFont dateFont;
-    dateFont.setPointSize(46);
+    dateFont.setPointSize(40);
     dateFont.setWeight(QFont::Normal);
 
-    drawCentred(time, timeFont, 220, QColor(255, 255, 255));
-    drawCentred(date, dateFont, 380, QColor(235, 235, 235));
+    // Clock + date at the top of the screen.
+    drawCentred(time, timeFont, 150, QColor(255, 255, 255));
+    drawCentred(date, dateFont, 270, QColor(235, 235, 235));
 
-    // Password field: a rounded pill with dots for typed characters, or a status
-    // line while verifying / after a failure.
-    const int fieldW = 520, fieldH = 96;
-    const QRectF field((kW - fieldW) / 2.0, 560.0, fieldW, fieldH);
+    // Password field: a rounded pill near the bottom, with dots for typed
+    // characters, or a status line while verifying / after a failure.
+    const int fieldW = 460, fieldH = 84;
+    const QRectF field((kW - fieldW) / 2.0, 900.0, fieldW, fieldH);
     const QColor accent = state.error ? QColor(235, 90, 90) : QColor(255, 255, 255);
 
     p.setPen(Qt::NoPen);
@@ -72,16 +74,16 @@ TextImage renderOverlay(const State &state)
 
     if (state.verifying) {
         QFont f;
-        f.setPointSize(28);
-        drawCentred(QStringLiteral("Verificerer…"), f, int(field.center().y()), accent);
+        f.setPointSize(24);
+        drawCentred(QStringLiteral("Verifying…"), f, int(field.center().y()), accent);
     } else if (state.error && state.passwordLen == 0) {
         QFont f;
-        f.setPointSize(26);
-        drawCentred(QStringLiteral("Forkert adgangskode"), f, int(field.center().y()), accent);
+        f.setPointSize(24);
+        drawCentred(QStringLiteral("Wrong password"), f, int(field.center().y()), accent);
     } else if (state.passwordLen == 0) {
         QFont f;
-        f.setPointSize(26);
-        drawCentred(QStringLiteral("Indtast adgangskode"), f, int(field.center().y()),
+        f.setPointSize(24);
+        drawCentred(QStringLiteral("Enter password"), f, int(field.center().y()),
                     QColor(200, 200, 200, 180));
     } else {
         // Row of dots, capped so a long password stays inside the pill.
