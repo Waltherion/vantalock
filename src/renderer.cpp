@@ -17,6 +17,12 @@ static const uint32_t kVertSpv[] =
 static const uint32_t kFragSpv[] =
 #include "present.frag.inc"
     ;
+static const uint32_t kOverlayVertSpv[] =
+#include "overlay.vert.inc"
+    ;
+static const uint32_t kOverlayFragSpv[] =
+#include "overlay.frag.inc"
+    ;
 
 #define VKCHECK(expr, msg)                                                   \
     do {                                                                     \
@@ -48,6 +54,8 @@ Renderer::Renderer(bool wantHdr)
         m_thumb = !(t[0] == '0' && t[1] == '\0');
     if (const char *th = std::getenv("VANTALOCK_THUMB_HEIGHT"))
         m_thumbFrac = float(std::atof(th));
+    if (const char *ch = std::getenv("VANTALOCK_CLOCK_HEIGHT"))
+        m_clockFrac = float(std::atof(ch));
 
     VkApplicationInfo app{};
     app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -84,6 +92,9 @@ Renderer::~Renderer()
         if (m_texView) vkDestroyImageView(m_device, m_texView, nullptr);
         if (m_texImage) vkDestroyImage(m_device, m_texImage, nullptr);
         if (m_texMem) vkFreeMemory(m_device, m_texMem, nullptr);
+        if (m_overlayView) vkDestroyImageView(m_device, m_overlayView, nullptr);
+        if (m_overlayTex) vkDestroyImage(m_device, m_overlayTex, nullptr);
+        if (m_overlayMem) vkFreeMemory(m_device, m_overlayMem, nullptr);
         for (auto &fp : m_formatPipelines) {
             if (fp.pipeline) vkDestroyPipeline(m_device, fp.pipeline, nullptr);
             if (fp.renderPass) vkDestroyRenderPass(m_device, fp.renderPass, nullptr);
@@ -278,12 +289,13 @@ bool Renderer::createSharedResources()
     return true;
 }
 
-bool Renderer::getOrCreatePipeline(VkFormat format, VkRenderPass &rp, VkPipeline &pipe)
+bool Renderer::getOrCreatePipeline(VkFormat format, VkRenderPass &rp, VkPipeline &present, VkPipeline &overlay)
 {
     for (const auto &fp : m_formatPipelines) {
         if (fp.format == format) {
             rp = fp.renderPass;
-            pipe = fp.pipeline;
+            present = fp.pipeline;
+            overlay = fp.overlayPipeline;
             return true;
         }
     }
@@ -401,9 +413,66 @@ bool Renderer::getOrCreatePipeline(VkFormat format, VkRenderPass &rp, VkPipeline
         return false;
     }
 
-    m_formatPipelines.push_back({ format, newRp, newPipe });
+    // Overlay pipeline: same render pass + layout, but with a vertex buffer
+    // (pos + uv), triangle strip, and alpha blending for the clock/date panel.
+    VkShaderModule ovVert = VK_NULL_HANDLE, ovFrag = VK_NULL_HANDLE;
+    if (!makeModule(kOverlayVertSpv, sizeof(kOverlayVertSpv), &ovVert)
+        || !makeModule(kOverlayFragSpv, sizeof(kOverlayFragSpv), &ovFrag)) {
+        std::fprintf(stderr, "vantalock: overlay shader module creation failed\n");
+        vkDestroyPipeline(m_device, newPipe, nullptr);
+        vkDestroyRenderPass(m_device, newRp, nullptr);
+        return false;
+    }
+    VkPipelineShaderStageCreateInfo ovStages[2] = { stages[0], stages[1] };
+    ovStages[0].module = ovVert;
+    ovStages[1].module = ovFrag;
+
+    VkVertexInputBindingDescription vbind{ 0, 4 * sizeof(float), VK_VERTEX_INPUT_RATE_VERTEX };
+    VkVertexInputAttributeDescription vattr[2]{};
+    vattr[0] = { 0, 0, VK_FORMAT_R32G32_SFLOAT, 0 };
+    vattr[1] = { 1, 0, VK_FORMAT_R32G32_SFLOAT, 2 * sizeof(float) };
+    VkPipelineVertexInputStateCreateInfo ovVi{};
+    ovVi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    ovVi.vertexBindingDescriptionCount = 1;
+    ovVi.pVertexBindingDescriptions = &vbind;
+    ovVi.vertexAttributeDescriptionCount = 2;
+    ovVi.pVertexAttributeDescriptions = vattr;
+
+    VkPipelineInputAssemblyStateCreateInfo ovIa = ia;
+    ovIa.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+
+    VkPipelineColorBlendAttachmentState ovCba = cba;
+    ovCba.blendEnable = VK_TRUE;
+    ovCba.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    ovCba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    ovCba.colorBlendOp = VK_BLEND_OP_ADD;
+    ovCba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    ovCba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    ovCba.alphaBlendOp = VK_BLEND_OP_ADD;
+    VkPipelineColorBlendStateCreateInfo ovCb = cb;
+    ovCb.pAttachments = &ovCba;
+
+    VkGraphicsPipelineCreateInfo ovGp = gp;
+    ovGp.pStages = ovStages;
+    ovGp.pVertexInputState = &ovVi;
+    ovGp.pInputAssemblyState = &ovIa;
+    ovGp.pColorBlendState = &ovCb;
+
+    VkPipeline newOverlay = VK_NULL_HANDLE;
+    VkResult opr = vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &ovGp, nullptr, &newOverlay);
+    vkDestroyShaderModule(m_device, ovVert, nullptr);
+    vkDestroyShaderModule(m_device, ovFrag, nullptr);
+    if (opr != VK_SUCCESS) {
+        std::fprintf(stderr, "vantalock: overlay vkCreateGraphicsPipelines (VkResult=%d)\n", opr);
+        vkDestroyPipeline(m_device, newPipe, nullptr);
+        vkDestroyRenderPass(m_device, newRp, nullptr);
+        return false;
+    }
+
+    m_formatPipelines.push_back({ format, newRp, newPipe, newOverlay });
     rp = newRp;
-    pipe = newPipe;
+    present = newPipe;
+    overlay = newOverlay;
     return true;
 }
 
@@ -514,6 +583,128 @@ bool Renderer::uploadTexture(const HdrImage &img)
     return true;
 }
 
+bool Renderer::uploadOverlay(const uint8_t *rgba, int w, int h)
+{
+    if (!m_device || !rgba || w <= 0 || h <= 0)
+        return false;
+
+    // First call (fixed size): create the device-local RGBA8 texture + view.
+    if (!m_overlayReady) {
+        VkImageCreateInfo ici{};
+        ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        ici.imageType = VK_IMAGE_TYPE_2D;
+        ici.format = VK_FORMAT_R8G8B8A8_UNORM;
+        ici.extent = { uint32_t(w), uint32_t(h), 1 };
+        ici.mipLevels = 1;
+        ici.arrayLayers = 1;
+        ici.samples = VK_SAMPLE_COUNT_1_BIT;
+        ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ici.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VKCHECK(vkCreateImage(m_device, &ici, nullptr, &m_overlayTex), "overlay image");
+        VkMemoryRequirements mreq;
+        vkGetImageMemoryRequirements(m_device, m_overlayTex, &mreq);
+        VkMemoryAllocateInfo ai{};
+        ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        ai.allocationSize = mreq.size;
+        ai.memoryTypeIndex = findMemoryType(mreq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        VKCHECK(vkAllocateMemory(m_device, &ai, nullptr, &m_overlayMem), "overlay memory");
+        vkBindImageMemory(m_device, m_overlayTex, m_overlayMem, 0);
+
+        VkImageViewCreateInfo vci{};
+        vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vci.image = m_overlayTex;
+        vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vci.format = VK_FORMAT_R8G8B8A8_UNORM;
+        vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        VKCHECK(vkCreateImageView(m_device, &vci, nullptr, &m_overlayView), "overlay view");
+        m_overlayW = w;
+        m_overlayH = h;
+    }
+    if (w != m_overlayW || h != m_overlayH) {
+        std::fprintf(stderr, "vantalock: overlay size changed unexpectedly; skipping\n");
+        return false;
+    }
+
+    // Refresh: idle the device (renders are infrequent), then stage + copy.
+    vkDeviceWaitIdle(m_device);
+    const VkDeviceSize bytes = VkDeviceSize(w) * h * 4;
+    VkBuffer staging = VK_NULL_HANDLE;
+    VkDeviceMemory stagingMem = VK_NULL_HANDLE;
+    VkBufferCreateInfo bi{};
+    bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bi.size = bytes;
+    bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VKCHECK(vkCreateBuffer(m_device, &bi, nullptr, &staging), "overlay staging");
+    VkMemoryRequirements mreq;
+    vkGetBufferMemoryRequirements(m_device, staging, &mreq);
+    VkMemoryAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.allocationSize = mreq.size;
+    ai.memoryTypeIndex = findMemoryType(mreq.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VKCHECK(vkAllocateMemory(m_device, &ai, nullptr, &stagingMem), "overlay staging memory");
+    vkBindBufferMemory(m_device, staging, stagingMem, 0);
+    void *p = nullptr;
+    vkMapMemory(m_device, stagingMem, 0, bytes, 0, &p);
+    std::memcpy(p, rgba, size_t(bytes));
+    vkUnmapMemory(m_device, stagingMem);
+
+    VkCommandBufferAllocateInfo cba{};
+    cba.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cba.commandPool = m_cmdPool;
+    cba.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cba.commandBufferCount = 1;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    VKCHECK(vkAllocateCommandBuffers(m_device, &cba, &cmd), "overlay cmd");
+    VkCommandBufferBeginInfo bbi{};
+    bbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &bbi);
+
+    VkImageMemoryBarrier toDst{};
+    toDst.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    toDst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; // discard previous contents
+    toDst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    toDst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toDst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toDst.image = m_overlayTex;
+    toDst.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    toDst.srcAccessMask = 0;
+    toDst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0, 0, nullptr, 0, nullptr, 1, &toDst);
+
+    VkBufferImageCopy region{};
+    region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    region.imageExtent = { uint32_t(w), uint32_t(h), 1 };
+    vkCmdCopyBufferToImage(cmd, staging, m_overlayTex, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    VkImageMemoryBarrier toShader = toDst;
+    toShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    toShader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    toShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    toShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, nullptr, 0, nullptr, 1, &toShader);
+
+    vkEndCommandBuffer(cmd);
+    VkSubmitInfo si{};
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cmd;
+    vkQueueSubmit(m_queue, 1, &si, VK_NULL_HANDLE);
+    vkQueueWaitIdle(m_queue);
+    vkFreeCommandBuffers(m_device, m_cmdPool, 1, &cmd);
+    vkDestroyBuffer(m_device, staging, nullptr);
+    vkFreeMemory(m_device, stagingMem, nullptr);
+
+    m_overlayReady = true;
+    return true;
+}
+
 bool Renderer::ensureDevice(VkSurfaceKHR probe, const HdrImage &img)
 {
     if (m_deviceReady)
@@ -549,7 +740,8 @@ bool Renderer::probe(VkSurfaceKHR surface)
     return true;
 }
 
-bool Renderer::createUboSet(VkBuffer &buf, VkDeviceMemory &mem, void *&mapped, VkDescriptorSet &set)
+bool Renderer::createUboSet(VkBuffer &buf, VkDeviceMemory &mem, void *&mapped, VkDescriptorSet &set,
+                            VkImageView view)
 {
     VkBufferCreateInfo bi{};
     bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -576,7 +768,7 @@ bool Renderer::createUboSet(VkBuffer &buf, VkDeviceMemory &mem, void *&mapped, V
     VKCHECK(vkAllocateDescriptorSets(m_device, &da, &set), "descriptor set");
 
     VkDescriptorBufferInfo dbi{ buf, 0, bi.size };
-    VkDescriptorImageInfo dii{ m_sampler, m_texView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+    VkDescriptorImageInfo dii{ m_sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
     VkWriteDescriptorSet writes[2]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = set;
@@ -610,7 +802,8 @@ bool Renderer::createOutput(Output &out, VkSurfaceKHR surface, uint32_t w, uint3
         return false;
     out.format = sfmt.format;
     out.hdr = gotHdr;
-    if (!getOrCreatePipeline(sfmt.format, out.renderPass, out.pipeline))
+    VkPipeline overlayPipe = VK_NULL_HANDLE;
+    if (!getOrCreatePipeline(sfmt.format, out.renderPass, out.pipeline, overlayPipe))
         return false;
     std::fprintf(stderr, "vantalock: output swapchain = %s (format=%d)\n",
         gotHdr ? "scRGB (HDR)" : "sRGB (SDR)", int(sfmt.format));
@@ -683,10 +876,35 @@ bool Renderer::createOutput(Output &out, VkSurfaceKHR surface, uint32_t w, uint3
     }
 
     // UBO (host visible, persistently mapped).
-    if (!createUboSet(out.ubo, out.uboMem, out.uboMapped, out.descriptor))
+    if (!createUboSet(out.ubo, out.uboMem, out.uboMapped, out.descriptor, m_texView))
         return false;
-    if (!createUboSet(out.thumbUbo, out.thumbUboMem, out.thumbUboMapped, out.thumbDescriptor))
+    if (!createUboSet(out.thumbUbo, out.thumbUboMem, out.thumbUboMapped, out.thumbDescriptor, m_texView))
         return false;
+
+    // Overlay (clock/date): pipeline handle, UBO/descriptor bound to the overlay
+    // texture, and a vertex buffer for the positioned quad.
+    out.overlayPipeline = overlayPipe;
+    if (m_overlayReady) {
+        if (!createUboSet(out.overlayUbo, out.overlayUboMem, out.overlayUboMapped,
+                          out.overlayDescriptor, m_overlayView))
+            return false;
+        VkBufferCreateInfo vbi{};
+        vbi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        vbi.size = 16 * sizeof(float); // 4 verts * (vec2 pos + vec2 uv)
+        vbi.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        vbi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        VKCHECK(vkCreateBuffer(m_device, &vbi, nullptr, &out.overlayVbo), "overlay vbo");
+        VkMemoryRequirements vmr;
+        vkGetBufferMemoryRequirements(m_device, out.overlayVbo, &vmr);
+        VkMemoryAllocateInfo vai{};
+        vai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        vai.allocationSize = vmr.size;
+        vai.memoryTypeIndex = findMemoryType(vmr.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        VKCHECK(vkAllocateMemory(m_device, &vai, nullptr, &out.overlayVboMem), "overlay vbo memory");
+        vkBindBufferMemory(m_device, out.overlayVbo, out.overlayVboMem, 0);
+        vkMapMemory(m_device, out.overlayVboMem, 0, vbi.size, 0, &out.overlayVboMapped);
+    }
 
     // Command buffer + sync.
     VkCommandBufferAllocateInfo cbi{};
@@ -801,6 +1019,36 @@ void Renderer::renderOutput(Output &out)
         vkCmdDraw(out.cmd, 3, 1, 0, 0);
     }
 
+    // Overlay (clock/date): an alpha-blended quad placed in NDC, full viewport.
+    if (m_overlayReady && out.overlayPipeline && out.overlayDescriptor && out.overlayVbo) {
+        float ovUbo[16] = { scale, sdr, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+        std::memcpy(out.overlayUboMapped, ovUbo, sizeof(ovUbo));
+
+        const float ow = float(out.extent.width), oh = float(out.extent.height);
+        const float ch = m_clockFrac * oh;
+        const float cw = ch * (float(m_overlayW) / float(m_overlayH));
+        const float cx0 = (ow - cw) * 0.5f, cx1 = cx0 + cw;
+        const float cy0 = m_clockY * oh - ch * 0.5f, cy1 = cy0 + ch;
+        auto ndcX = [&](float px) { return px / ow * 2.0f - 1.0f; };
+        auto ndcY = [&](float py) { return py / oh * 2.0f - 1.0f; };
+        const float verts[16] = {
+            ndcX(cx0), ndcY(cy0), 0.0f, 0.0f, // TL
+            ndcX(cx1), ndcY(cy0), 1.0f, 0.0f, // TR
+            ndcX(cx0), ndcY(cy1), 0.0f, 1.0f, // BL
+            ndcX(cx1), ndcY(cy1), 1.0f, 1.0f, // BR
+        };
+        std::memcpy(out.overlayVboMapped, verts, sizeof(verts));
+
+        vkCmdSetViewport(out.cmd, 0, 1, &vpt);
+        vkCmdSetScissor(out.cmd, 0, 1, &sc);
+        vkCmdBindPipeline(out.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, out.overlayPipeline);
+        vkCmdBindDescriptorSets(out.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeLayout,
+            0, 1, &out.overlayDescriptor, 0, nullptr);
+        VkDeviceSize off = 0;
+        vkCmdBindVertexBuffers(out.cmd, 0, 1, &out.overlayVbo, &off);
+        vkCmdDraw(out.cmd, 4, 1, 0, 0);
+    }
+
     vkCmdEndRenderPass(out.cmd);
     vkEndCommandBuffer(out.cmd);
 
@@ -844,6 +1092,12 @@ void Renderer::destroyOutput(Output &out)
     if (out.thumbUboMapped) vkUnmapMemory(m_device, out.thumbUboMem);
     if (out.thumbUbo) vkDestroyBuffer(m_device, out.thumbUbo, nullptr);
     if (out.thumbUboMem) vkFreeMemory(m_device, out.thumbUboMem, nullptr);
+    if (out.overlayUboMapped) vkUnmapMemory(m_device, out.overlayUboMem);
+    if (out.overlayUbo) vkDestroyBuffer(m_device, out.overlayUbo, nullptr);
+    if (out.overlayUboMem) vkFreeMemory(m_device, out.overlayUboMem, nullptr);
+    if (out.overlayVboMapped) vkUnmapMemory(m_device, out.overlayVboMem);
+    if (out.overlayVbo) vkDestroyBuffer(m_device, out.overlayVbo, nullptr);
+    if (out.overlayVboMem) vkFreeMemory(m_device, out.overlayVboMem, nullptr);
     if (out.surface) vkDestroySurfaceKHR(m_instance, out.surface, nullptr);
     out = Output{};
 }

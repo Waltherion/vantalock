@@ -72,6 +72,10 @@ private:
     std::map<std::string, bool> m_hdrByName;
     bool m_hdrQueried = false;
 
+    // Re-render the clock overlay + all outputs when the minute changes.
+    void refreshClock();
+    int m_lastMinute = -1;
+
     const HdrImage &m_image;
 
     wl_display *m_display = nullptr;

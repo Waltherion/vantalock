@@ -59,6 +59,8 @@ function(compile_shader STAGE SRC OUT)
 endfunction()
 compile_shader(vert "${CMAKE_CURRENT_SOURCE_DIR}/shaders/present.vert" "${SPV_DIR}/present.vert.inc")
 compile_shader(frag "${CMAKE_CURRENT_SOURCE_DIR}/shaders/present.frag" "${SPV_DIR}/present.frag.inc")
+compile_shader(vert "${CMAKE_CURRENT_SOURCE_DIR}/shaders/overlay.vert" "${SPV_DIR}/overlay.vert.inc")
+compile_shader(frag "${CMAKE_CURRENT_SOURCE_DIR}/shaders/overlay.frag" "${SPV_DIR}/overlay.frag.inc")
 
 add_executable(vantalock
     src/main.cpp
@@ -66,13 +68,14 @@ add_executable(vantalock
     src/renderer.cpp
     src/cm_tag.cpp
     src/hdr_image.cpp
+    src/overlay_text.cpp
     ${CM_SOURCES}
     ${LOCK_SOURCES}
 )
 
 # renderer.cpp #includes the generated SPIR-V initialisers.
 set_source_files_properties(src/renderer.cpp PROPERTIES
-    OBJECT_DEPENDS "${SPV_DIR}/present.vert.inc;${SPV_DIR}/present.frag.inc")
+    OBJECT_DEPENDS "${SPV_DIR}/present.vert.inc;${SPV_DIR}/present.frag.inc;${SPV_DIR}/overlay.vert.inc;${SPV_DIR}/overlay.frag.inc")
 
 target_include_directories(vantalock PRIVATE "${WL_GEN_DIR}" "${SPV_DIR}")
 

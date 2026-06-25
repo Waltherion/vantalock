@@ -2,6 +2,7 @@
 
 #include "cm_tag.h"
 #include "hdr_image.h"
+#include "overlay_text.h"
 
 #include <wayland-client.h>
 #include "ext-session-lock-v1-client-protocol.h"
@@ -241,6 +242,10 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
             m_running = false;
             return;
         }
+        // Upload the clock/date overlay before any output binds its descriptor.
+        const overlay::TextImage clock = overlay::renderClock();
+        if (clock.valid())
+            m_renderer->uploadOverlay(clock.rgba.data(), clock.w, clock.h);
         m_deviceReady = true;
     }
 
@@ -274,6 +279,21 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
         ctx->render.surface = m_renderer->createWaylandSurface(m_display, ctx->surface);
         m_renderer->createOutput(ctx->render, ctx->render.surface, w, h, m_image, wantHdr);
         m_renderer->renderOutput(ctx->render);
+    }
+}
+
+void SessionLock::refreshClock()
+{
+    if (!m_deviceReady)
+        return;
+    const overlay::TextImage clock = overlay::renderClock();
+    if (clock.valid())
+        m_renderer->uploadOverlay(clock.rgba.data(), clock.w, clock.h);
+    // Re-render directly (NOT via frame callbacks): on Wayland, requestUpdate from
+    // a timer may never paint. Each configured output redraws with the new clock.
+    for (auto &o : m_outputs) {
+        if (o->configured)
+            m_renderer->renderOutput(o->render);
     }
 }
 
@@ -394,6 +414,15 @@ bool SessionLock::run()
         if (wl_display_dispatch_pending(m_display) < 0) {
             std::fprintf(stderr, "vantalock: dispatch error\n");
             break;
+        }
+
+        // Tick the clock: refresh + re-render when the minute changes.
+        std::time_t tt = std::time(nullptr);
+        std::tm lt{};
+        localtime_r(&tt, &lt);
+        if (lt.tm_min != m_lastMinute) {
+            m_lastMinute = lt.tm_min;
+            refreshClock();
         }
     }
 
