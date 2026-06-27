@@ -30,7 +30,7 @@ struct Color {
 struct Theme {
     Color text{ 255, 255, 255, 255 };  // clock / date / dots
     Color accent{ 255, 255, 255, 255 }; // field border
-    Color error{ 235, 90, 90, 255 };    // wrong-password feedback
+    Color error{ 255, 26, 60, 255 };    // wrong-password feedback (#ff1a3c, monochrome-minimalism red)
     Color shadow{ 0, 0, 0, 150 };       // text shadow
 };
 
