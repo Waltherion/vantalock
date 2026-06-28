@@ -27,7 +27,7 @@ const char *kDefaultConfig = R"JSONC(// VantaLock configuration (JSONC: // and /
   // ---- Background: the blurred, dimmed wallpaper behind everything ----
   "background": {
     "blur": 0.02,          // blur radius in uv units (0 = sharp / off)
-    // "blurType": "frosted", // style: "frosted" (sparse-tap glass, default) | "gaussian" (smooth) | "box" | "pixelate" | "none"
+    "blurType": "gaussian",// style: "gaussian" (smooth, default) | "frosted" (sparse-tap glass) | "box" | "pixelate" | "none"
     "dim": 0.5            // dim multiplier in linear light (1 = none, 0 = black)
   },
   // ---- Thumbnail: the sharp, framed copy of the wallpaper ----
