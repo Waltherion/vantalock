@@ -18,42 +18,57 @@ namespace {
 const char *kDefaultConfig = R"JSONC(// VantaLock configuration (JSONC: // and /* */ comments + trailing commas OK).
 // Colours default to the active Hyprland theme; set them here to override.
 // Hex colours are "RRGGBBAA" (or "#RRGGBB"). Positions under "clock"/"field" are
-// fractions (0..1) of a 1920x1080 reference canvas drawn across the whole screen.
+// fractions (0..1) of a 1920x1080 reference canvas drawn across the whole screen
+// (text rasterises at the output's native resolution, so it stays sharp on 4K).
+//
+// Every option is shown below; commented-out lines are optional knobs you can
+// turn on by uncommenting them.
 {
+  // ---- Background: the blurred, dimmed wallpaper behind everything ----
   "background": {
-    "blur": 0.02,         // blur radius (0 = sharp)
-    "blurType": "frosted",// "frosted" (sparse-tap glass), "gaussian" (smooth), "box", "pixelate", "none"
-    "dim": 0.5            // dim multiplier (1 = none)
+    "blur": 0.02,          // blur radius in uv units (0 = sharp / off)
+    // "blurType": "frosted", // style: "frosted" (sparse-tap glass, default) | "gaussian" (smooth) | "box" | "pixelate" | "none"
+    "dim": 0.5            // dim multiplier in linear light (1 = none, 0 = black)
   },
+  // ---- Thumbnail: the sharp, framed copy of the wallpaper ----
   "thumbnail": {
-    "show": true,
-    "height": 0.24, // fraction of screen height
-    "y": 0.55,      // vertical centre
+    "show": true,   // false = hide the thumbnail entirely
+    "height": 0.24, // height as a fraction of screen height
+    "y": 0.55,      // vertical centre as a fraction
     "radius": 0.08  // corner rounding, fraction of thumb height (0 = square)
   },
+  // ---- Fonts: point sizes on the 1920x1080 reference (they scale to your output) ----
   "fonts": {
     "family": "",   // empty = system default
-    "time": 120,
-    "weekday": 50,
-    "date": 38,
-    "field": 18
+    "time": 120,    // clock (HH:mm)
+    "weekday": 50,  // weekday line
+    "date": 38,     // date + year line
+    "field": 18     // password-field status text
   },
+  // ---- Clock/date vertical positions (fractions of screen height) ----
   "clock": {
     "timeY": 0.14,
     "weekdayY": 0.27,
     "dateY": 0.34
   },
+  // ---- Password field ----
   "field": {
     "width": 300,
     "height": 52,
-    "y": 0.68       // field TOP
+    "y": 0.68       // field TOP as a fraction of screen height
   },
+  // ---- Colours: empty string = inherit the active theme's colour ----
   "colors": {
-    "text": "",     // empty = theme colour
-    "accent": "",
-    "error": "",
-    "shadow": ""
+    "text": "",     // clock / date / dots
+    "accent": "",   // password-field border + dots
+    "error": "",    // wrong-password feedback
+    "shadow": ""    // text shadow
   }
+
+  // Optional env overrides (no file edit; handy for quick tests):
+  //   VANTALOCK_BLUR=<r>   VANTALOCK_DIM=<d>      override blur / dim
+  //   VANTALOCK_CM_TAG=1   force a colour-management tag (if black looks grey)
+  //   VANTALOCK_TIMEOUT=<seconds>  safety auto-unlock (testing only)
 }
 )JSONC";
 
