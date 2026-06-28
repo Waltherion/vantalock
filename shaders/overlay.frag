@@ -22,7 +22,7 @@ layout(std140, binding = 0) uniform U {
     float bandFreqY;     // band cycles per unit v_uv.y
     float stopCount;     // number of valid stops (2..8)
     float bloomStrength; // glow amount (added in a later step; 0 = off)
-    float _p0;
+    float brightness;    // band luminance multiplier (>1 = HDR pop)
     float _p1;
     float _p2;
     float _p3;
@@ -58,5 +58,7 @@ void main()
         src = pan.rgb * bandColor(t); // white mask -> band; dark fill/shadow stay dark
     }
     vec3 c = (u.sdr > 0.5) ? src : srgbToLinear(src) * u.scale;
+    if (u.rainbowOn > 0.5)
+        c *= u.brightness; // push the band into HDR brightness so vivid colours pop
     fragColor = vec4(c, pan.a);
 }

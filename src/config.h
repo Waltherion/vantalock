@@ -50,7 +50,8 @@ struct Config {
     // Rainbow text: a STATIC gradient across the clock/date (no animation). Off by default.
     bool rainbow = false;
     std::vector<overlay::Color> rainbowStops; // >=2 stops to form the gradient
-    float rainbowPeriod = 0.0f; // px per cycle on the 1920-wide reference (0 = span full width once)
+    float rainbowPeriod = 0.0f;     // px per cycle on the 1920-wide reference (0 = span full width once)
+    float rainbowBrightness = 1.0f; // band luminance multiplier (>1 pushes HDR brightness so colours pop)
 
     // Load defaults (seeded from the active theme) merged with the user's JSONC.
     static Config load();

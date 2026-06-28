@@ -154,4 +154,5 @@ private:
     std::vector<float> m_rainbowStops; // flattened rgba in 0..1, 4 floats per stop (max 8 used)
     float m_rainbowPeriod = 0.0f;      // px per cycle (<=0 = span once across the diagonal)
     float m_rainbowPhase = 0.0f;       // 0..1 scroll offset; the animation loop advances this
+    float m_rainbowBrightness = 1.0f;  // band luminance multiplier (>1 = HDR pop)
 };
