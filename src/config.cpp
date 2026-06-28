@@ -71,7 +71,7 @@ const char *kDefaultConfig = R"JSONC(// VantaLock configuration (JSONC: // and /
   // ---- Text shadow geometry (the colour itself is "shadow" under "colors") ----
   // "shadow": { "offset": 1.4, "strength": 0.5 }, // offset = reference px (0 = none); strength = alpha mult (0..1)
 
-  // ---- Rainbow text: a static gradient across the clock/date (off by default) ----
+  // ---- Rainbow: a rolling 45-degree band over the clock/date, field outline + thumbnail border (off by default) ----
   // "rainbow": {
   //   "enabled": true,
   //   "stops": ["#ff5555", "#ffb86c", "#50fa7b", "#8be9fd", "#bd93f9"], // >=2 hex colours
