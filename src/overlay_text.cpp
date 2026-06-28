@@ -2,11 +2,14 @@
 
 #include "config.h"
 
+#include <QBrush>
 #include <QColor>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFont>
+#include <QLinearGradient>
+#include <QPen>
 #include <QImage>
 #include <QLocale>
 #include <QPainter>
@@ -111,7 +114,23 @@ TextImage renderOverlay(const State &state, const Config &cfg, double scale)
     // "floating") and a softened alpha (the theme's $shadow is often fully opaque).
     QColor shadow = qc(cfg.shadow);
     shadow.setAlphaF(shadow.alphaF() * std::clamp(double(cfg.shadowStrength), 0.0, 1.0));
-    auto drawCentred = [&](const QString &text, const QFont &fnt, int cy, const QColor &col) {
+
+    // Optional STATIC rainbow gradient for the clock/date. A horizontal gradient in
+    // logical canvas coordinates, so each centred line samples its slice of one band.
+    // period <= 0 spans the whole width once; period > 0 repeats every `period` px.
+    const bool rainbowOn = cfg.rainbow && cfg.rainbowStops.size() >= 2;
+    QLinearGradient rainbowGrad;
+    if (rainbowOn) {
+        const double per = cfg.rainbowPeriod > 0.0f ? double(cfg.rainbowPeriod) * scale : double(W);
+        rainbowGrad = QLinearGradient(0.0, 0.0, per, 0.0);
+        rainbowGrad.setSpread(cfg.rainbowPeriod > 0.0f ? QGradient::RepeatSpread : QGradient::PadSpread);
+        const int n = int(cfg.rainbowStops.size());
+        for (int i = 0; i < n; ++i)
+            rainbowGrad.setColorAt(double(i) / (n - 1), qc(cfg.rainbowStops[size_t(i)]));
+    }
+
+    auto drawCentred = [&](const QString &text, const QFont &fnt, int cy, const QColor &col,
+                           bool useRainbow = false) {
         p.setFont(fnt);
         const QFontMetrics fm(fnt);
         const QRect br = fm.boundingRect(text);
@@ -120,14 +139,17 @@ TextImage renderOverlay(const State &state, const Config &cfg, double scale)
         const int sh = qMax(0, int(cfg.shadowOffset * scale + 0.5)); // configurable, scales with resolution
         p.setPen(shadow);
         p.drawText(x + sh, y + sh, text); // soft shadow for legibility
-        p.setPen(col);
+        if (useRainbow && rainbowOn)
+            p.setPen(QPen(QBrush(rainbowGrad), 0));
+        else
+            p.setPen(col);
         p.drawText(x, y, text);
     };
 
     // Clock at the top, then weekday on its own line, then date + year below.
-    drawCentred(time, font(cfg.timeSize, QFont::DemiBold), int(cfg.timeY * H), qc(cfg.text));
-    drawCentred(weekday, font(cfg.weekdaySize, QFont::Normal), int(cfg.weekdayY * H), qc(cfg.text));
-    drawCentred(date, font(cfg.dateSize, QFont::Normal), int(cfg.dateY * H), qc(cfg.text));
+    drawCentred(time, font(cfg.timeSize, QFont::DemiBold), int(cfg.timeY * H), qc(cfg.text), true);
+    drawCentred(weekday, font(cfg.weekdaySize, QFont::Normal), int(cfg.weekdayY * H), qc(cfg.text), true);
+    drawCentred(date, font(cfg.dateSize, QFont::Normal), int(cfg.dateY * H), qc(cfg.text), true);
 
     // Password field: a rounded pill at cfg.fieldY (top), with dots for typed
     // characters, or a status line while verifying / after a failure.

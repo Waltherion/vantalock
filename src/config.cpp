@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -66,7 +67,14 @@ const char *kDefaultConfig = R"JSONC(// VantaLock configuration (JSONC: // and /
   },
 
   // ---- Text shadow geometry (the colour itself is "shadow" under "colors") ----
-  // "shadow": { "offset": 1.4, "strength": 0.5 } // offset = reference px (0 = none); strength = alpha mult (0..1)
+  // "shadow": { "offset": 1.4, "strength": 0.5 }, // offset = reference px (0 = none); strength = alpha mult (0..1)
+
+  // ---- Rainbow text: a static gradient across the clock/date (off by default) ----
+  // "rainbow": {
+  //   "enabled": true,
+  //   "stops": ["#ff5555", "#ffb86c", "#50fa7b", "#8be9fd", "#bd93f9"], // >=2 hex colours
+  //   "period": 0   // px per cycle on the 1920-wide reference (0 = span full width once; smaller = tighter repeats)
+  // }
 
   // Optional env overrides (no file edit; handy for quick tests):
   //   VANTALOCK_BLUR=<r>   VANTALOCK_DIM=<d>      override blur / dim
@@ -204,6 +212,17 @@ Config Config::load()
     const QJsonObject sh = section("shadow");
     cfg.shadowOffset = float(sh.value("offset").toDouble(cfg.shadowOffset));
     cfg.shadowStrength = float(sh.value("strength").toDouble(cfg.shadowStrength));
+
+    const QJsonObject rb = section("rainbow");
+    cfg.rainbow = rb.value("enabled").toBool(cfg.rainbow);
+    cfg.rainbowPeriod = float(rb.value("period").toDouble(cfg.rainbowPeriod));
+    const QJsonArray stops = rb.value("stops").toArray();
+    if (!stops.isEmpty()) {
+        cfg.rainbowStops.clear();
+        overlay::Color sc;
+        for (const QJsonValue &v : stops)
+            if (parseColor(v.toString(), sc)) cfg.rainbowStops.push_back(sc);
+    }
 
     return cfg;
 }

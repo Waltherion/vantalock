@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "overlay_text.h"
 
@@ -45,6 +46,11 @@ struct Config {
     // Text drop shadow (the shadow colour itself is `shadow` above)
     float shadowOffset = 1.4f;   // offset in reference px (scales with resolution; 0 = none)
     float shadowStrength = 0.5f; // multiplier on the shadow alpha (0 = invisible, 1 = full)
+
+    // Rainbow text: a STATIC gradient across the clock/date (no animation). Off by default.
+    bool rainbow = false;
+    std::vector<overlay::Color> rainbowStops; // >=2 stops to form the gradient
+    float rainbowPeriod = 0.0f; // px per cycle on the 1920-wide reference (0 = span full width once)
 
     // Load defaults (seeded from the active theme) merged with the user's JSONC.
     static Config load();
