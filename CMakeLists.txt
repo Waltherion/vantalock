@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(vantalock VERSION 0.1.14 LANGUAGES C CXX)
+project(vantalock VERSION 0.1.15 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

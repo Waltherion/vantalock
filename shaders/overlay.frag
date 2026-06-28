@@ -84,8 +84,8 @@ void main()
         src = pan.rgb * bandc; // white mask -> band; dark fill/shadow stay dark
     }
     vec3 c = (u.sdr > 0.5) ? src : srgbToLinear(src) * u.scale;
-    if (u.rainbowOn > 0.5)
-        c *= u.brightness; // push the band into HDR brightness so vivid colours pop
+    if (u.rainbowOn > 0.5 && u.sdr < 0.5)
+        c *= u.brightness; // HDR only: on SDR a >1 multiply just clips channels -> desaturates to white
 
     float outA = pan.a;
     if (u.bloomStrength > 0.0) {
@@ -93,7 +93,7 @@ void main()
         // Glow colour: the band (rainbow) or the blurred text colour (otherwise).
         vec3 glowCol = (u.rainbowOn > 0.5) ? bandc * bs.a : bs.rgb;
         vec3 glow = (u.sdr > 0.5) ? glowCol : srgbToLinear(glowCol) * u.scale;
-        if (u.rainbowOn > 0.5)
+        if (u.rainbowOn > 0.5 && u.sdr < 0.5)
             glow *= u.brightness;
         c += glow * u.bloomStrength;
         outA = max(pan.a, clamp(bs.a * u.bloomStrength, 0.0, 1.0)); // make the halo visible over the bg
