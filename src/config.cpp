@@ -41,21 +41,21 @@ const char *kDefaultConfig = R"JSONC(// VantaLock configuration (JSONC: // and /
   // ---- Fonts: point sizes on the 1920x1080 reference (they scale to your output) ----
   "fonts": {
     "family": "",   // empty = system default
-    "time": 120,    // clock (HH:mm)
-    "weekday": 50,  // weekday line
-    "date": 38,     // date + year line
-    "field": 18     // password-field status text
+    "time": 70,     // clock (HH:mm)
+    "weekday": 30,  // weekday line
+    "date": 22,     // date + year line
+    "field": 12     // password-field status text
   },
   // ---- Clock/date vertical positions (fractions of screen height) ----
   "clock": {
-    "timeY": 0.14,
-    "weekdayY": 0.27,
-    "dateY": 0.34
+    "timeY": 0.22,
+    "weekdayY": 0.37,
+    "dateY": 0.41
   },
   // ---- Password field ----
   "field": {
-    "width": 300,
-    "height": 52,
+    "width": 200,
+    "height": 35,
     "y": 0.68       // field TOP as a fraction of screen height
   },
   // ---- Colours: empty string = inherit the active theme's colour ----

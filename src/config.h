@@ -22,19 +22,19 @@ struct Config {
 
     // Fonts
     std::string fontFamily; // empty = system default
-    int timeSize = 120;
-    int weekdaySize = 50;
-    int dateSize = 38;
-    int fieldFontSize = 18;
+    int timeSize = 70;
+    int weekdaySize = 30;
+    int dateSize = 22;
+    int fieldFontSize = 12;
 
     // Clock/date block (positions are fractions of the 1920x1080 overlay canvas)
-    float timeY = 0.14f;    // time baseline-ish centre
-    float weekdayY = 0.27f; // weekday line
-    float dateY = 0.34f;    // date + year line
+    float timeY = 0.22f;    // time baseline-ish centre
+    float weekdayY = 0.37f; // weekday line
+    float dateY = 0.41f;    // date + year line
 
     // Password field
-    int fieldW = 300;     // px on the 1920x1080 canvas
-    int fieldH = 52;      // px
+    int fieldW = 200;     // px on the 1920x1080 canvas
+    int fieldH = 35;      // px
     float fieldY = 0.68f; // field TOP as fraction of canvas height
 
     // Colours (resolved from the theme, overridable in the JSONC)
