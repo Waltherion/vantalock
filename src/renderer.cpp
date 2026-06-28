@@ -57,6 +57,7 @@ Renderer::Renderer(const Config &cfg)
     m_rainbow = cfg.rainbow && cfg.rainbowStops.size() >= 2;
     m_rainbowPeriod = cfg.rainbowPeriod;
     m_rainbowBrightness = cfg.rainbowBrightness;
+    m_bloomStrength = cfg.bloomStrength;
     for (size_t i = 0; i < cfg.rainbowStops.size() && i < 8; ++i) {
         const overlay::Color &c = cfg.rainbowStops[i];
         m_rainbowStops.push_back(c.r / 255.0f);
@@ -1046,6 +1047,7 @@ void Renderer::renderOutput(Output &out)
         float ovUbo[48] = { scale, sdr };
         ovUbo[2] = m_rainbow ? 1.0f : 0.0f; // rainbowOn
         ovUbo[3] = m_rainbowPhase;          // scroll offset (0 = static)
+        ovUbo[7] = m_bloomStrength;         // glow halo (works with or without rainbow)
         if (m_rainbow) {
             const float ow = float(out.extent.width), oh = float(out.extent.height);
             const float k = 0.70710678f; // 45-degree band direction
@@ -1053,7 +1055,6 @@ void Renderer::renderOutput(Output &out)
             ovUbo[4] = k * ow / per; // bandFreqX (cycles per unit v_uv.x)
             ovUbo[5] = k * oh / per; // bandFreqY
             ovUbo[6] = float(int(m_rainbowStops.size()) / 4); // stop count
-            ovUbo[7] = 0.0f;         // bloomStrength (added in a later step)
             ovUbo[8] = m_rainbowBrightness; // band luminance multiplier
             for (size_t i = 0; i < m_rainbowStops.size() && i < 32; ++i)
                 ovUbo[12 + i] = m_rainbowStops[i]; // 8 stops max, rgba each

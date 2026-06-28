@@ -7,8 +7,10 @@
 //
 // Optional rainbow: when rainbowOn, the panel's rainbow-able elements are drawn
 // WHITE on the CPU side, and a rolling 45-degree band (built from the stops) is
-// multiplied in here -- white -> band colour, dark fill/shadow stay dark. Scrolling
-// is just `phase` advancing, so no CPU re-render or texture re-upload per frame.
+// multiplied in here. Scrolling is just `phase` advancing -- no CPU re-render.
+//
+// Optional bloom: a soft halo from the blurred panel coverage, glowing in the band
+// colour (rainbow) or the text's own colour. Off (strength 0) -> skipped entirely.
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 fragColor;
@@ -21,7 +23,7 @@ layout(std140, binding = 0) uniform U {
     float bandFreqX;     // band cycles per unit v_uv.x (encodes the 45deg dir + period)
     float bandFreqY;     // band cycles per unit v_uv.y
     float stopCount;     // number of valid stops (2..8)
-    float bloomStrength; // glow amount (added in a later step; 0 = off)
+    float bloomStrength; // glow amount (0 = off)
     float brightness;    // band luminance multiplier (>1 = HDR pop)
     float _p1;
     float _p2;
@@ -49,16 +51,52 @@ vec3 bandColor(float t)
     return mix(u.stops[i].rgb, u.stops[j].rgb, fract(f));
 }
 
+// Blurred panel sample for the glow: rgb = premultiplied blurred colour, a = coverage.
+// Circular in pixels (offsets aspect-corrected via the panel size).
+vec4 bloomSample(vec2 uv)
+{
+    const int R = 3;
+    const float radius = 0.012; // uv-x units
+    ivec2 sz = textureSize(panel, 0);
+    vec2 stp = vec2(radius, radius * float(sz.x) / float(sz.y)) / float(R);
+    vec4 acc = vec4(0.0);
+    float wsum = 0.0;
+    for (int y = -R; y <= R; ++y) {
+        for (int x = -R; x <= R; ++x) {
+            float w = exp(-float(x * x + y * y) / 8.0);
+            vec4 s = texture(panel, uv + vec2(float(x), float(y)) * stp);
+            acc.rgb += s.rgb * s.a * w; // premultiplied
+            acc.a += s.a * w;
+            wsum += w;
+        }
+    }
+    return acc / wsum;
+}
+
 void main()
 {
     vec4 pan = texture(panel, v_uv);
     vec3 src = pan.rgb;
+    vec3 bandc = vec3(1.0);
     if (u.rainbowOn > 0.5) {
         float t = dot(v_uv, vec2(u.bandFreqX, u.bandFreqY)) + u.phase;
-        src = pan.rgb * bandColor(t); // white mask -> band; dark fill/shadow stay dark
+        bandc = bandColor(t);
+        src = pan.rgb * bandc; // white mask -> band; dark fill/shadow stay dark
     }
     vec3 c = (u.sdr > 0.5) ? src : srgbToLinear(src) * u.scale;
     if (u.rainbowOn > 0.5)
         c *= u.brightness; // push the band into HDR brightness so vivid colours pop
-    fragColor = vec4(c, pan.a);
+
+    float outA = pan.a;
+    if (u.bloomStrength > 0.0) {
+        vec4 bs = bloomSample(v_uv);
+        // Glow colour: the band (rainbow) or the blurred text colour (otherwise).
+        vec3 glowCol = (u.rainbowOn > 0.5) ? bandc * bs.a : bs.rgb;
+        vec3 glow = (u.sdr > 0.5) ? glowCol : srgbToLinear(glowCol) * u.scale;
+        if (u.rainbowOn > 0.5)
+            glow *= u.brightness;
+        c += glow * u.bloomStrength;
+        outA = max(pan.a, clamp(bs.a * u.bloomStrength, 0.0, 1.0)); // make the halo visible over the bg
+    }
+    fragColor = vec4(c, outA);
 }

@@ -77,7 +77,10 @@ const char *kDefaultConfig = R"JSONC(// VantaLock configuration (JSONC: // and /
   //   "brightness": 2.5,  // band luminance (1 = faithful sRGB; >1 pushes HDR brightness so vivid colours pop)
   //   "speed": 0          // band scroll in cycles/sec (0 = static, near-zero cost; negative = reverse).
   //                       // NOTE: >0 renders continuously on the GPU while the screen is on -- on laptops prefer 0.
-  // }
+  // },
+
+  // ---- Bloom: a soft glow around the text (rainbow colour, or the text colour). 0 = off ----
+  // "bloom": { "strength": 1.5 } // glow amount; combined with a non-zero rainbow "speed" it adds per-frame cost
 
   // Optional env overrides (no file edit; handy for quick tests):
   //   VANTALOCK_BLUR=<r>   VANTALOCK_DIM=<d>      override blur / dim
@@ -221,6 +224,9 @@ Config Config::load()
     cfg.rainbowPeriod = float(rb.value("period").toDouble(cfg.rainbowPeriod));
     cfg.rainbowBrightness = float(rb.value("brightness").toDouble(cfg.rainbowBrightness));
     cfg.rainbowSpeed = float(rb.value("speed").toDouble(cfg.rainbowSpeed));
+
+    const QJsonObject bl = section("bloom");
+    cfg.bloomStrength = float(bl.value("strength").toDouble(cfg.bloomStrength));
     const QJsonArray stops = rb.value("stops").toArray();
     if (!stops.isEmpty()) {
         cfg.rainbowStops.clear();

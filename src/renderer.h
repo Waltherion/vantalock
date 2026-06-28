@@ -158,4 +158,5 @@ private:
     float m_rainbowPeriod = 0.0f;      // px per cycle (<=0 = span once across the diagonal)
     float m_rainbowPhase = 0.0f;       // 0..1 scroll offset; the animation loop advances this
     float m_rainbowBrightness = 1.0f;  // band luminance multiplier (>1 = HDR pop)
+    float m_bloomStrength = 0.0f;      // glow halo around the text (0 = off)
 };

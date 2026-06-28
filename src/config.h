@@ -54,6 +54,9 @@ struct Config {
     float rainbowBrightness = 1.0f; // band luminance multiplier (>1 pushes HDR brightness so colours pop)
     float rainbowSpeed = 0.0f;      // band scroll: cycles/sec (0 = static; negative = reverse). >0 = continuous GPU use
 
+    // Bloom: a soft glow halo around the clock/date/field text (0 = off)
+    float bloomStrength = 0.0f;
+
     // Load defaults (seeded from the active theme) merged with the user's JSONC.
     static Config load();
     static std::string configPath();
