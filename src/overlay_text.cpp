@@ -147,15 +147,16 @@ TextImage renderOverlay(const State &state, const Config &cfg, double scale)
     const QRectF field((W - fieldW) / 2.0, cfg.fieldY * H, fieldW, fieldH);
     const QColor accent = state.error ? qc(cfg.error) : qc(cfg.accent);
 
+    const double fieldRad = fieldH * std::clamp(double(cfg.fieldRadius), 0.0, 0.5);
     p.setPen(Qt::NoPen);
     p.setBrush(QColor(0, 0, 0, 110));
-    p.drawRoundedRect(field, fieldH / 2.0, fieldH / 2.0);
+    p.drawRoundedRect(field, fieldRad, fieldRad);
     QPen border(rainbowOn ? QColor(255, 255, 255, 180)
                           : QColor(accent.red(), accent.green(), accent.blue(), 180));
     border.setWidthF(2.0 * scale);
     p.setPen(border);
     p.setBrush(Qt::NoBrush);
-    p.drawRoundedRect(field, fieldH / 2.0, fieldH / 2.0);
+    p.drawRoundedRect(field, fieldRad, fieldRad);
 
     if (state.verifying) {
         drawCentred(QStringLiteral("Verifying…"), font(cfg.fieldFontSize, QFont::Normal),

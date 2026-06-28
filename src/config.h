@@ -36,6 +36,7 @@ struct Config {
     int fieldW = 200;     // px on the 1920x1080 canvas
     int fieldH = 35;      // px
     float fieldY = 0.68f; // field TOP as fraction of canvas height
+    float fieldRadius = 0.5f; // corner rounding as fraction of field height (0.5 = pill, 0 = sharp)
 
     // Colours (resolved from the theme, overridable in the JSONC)
     overlay::Color text;

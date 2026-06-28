@@ -56,7 +56,8 @@ const char *kDefaultConfig = R"JSONC(// VantaLock configuration (JSONC: // and /
   "field": {
     "width": 200,
     "height": 35,
-    "y": 0.68       // field TOP as a fraction of screen height
+    "y": 0.68,      // field TOP as a fraction of screen height
+    "radius": 0.5   // corner rounding as a fraction of field height (0.5 = pill, 0 = sharp)
   },
   // ---- Colours: empty string = inherit the active theme's colour ----
   "colors": {
@@ -207,6 +208,7 @@ Config Config::load()
     cfg.fieldW = fl.value("width").toInt(cfg.fieldW);
     cfg.fieldH = fl.value("height").toInt(cfg.fieldH);
     cfg.fieldY = float(fl.value("y").toDouble(cfg.fieldY));
+    cfg.fieldRadius = float(fl.value("radius").toDouble(cfg.fieldRadius));
 
     const QJsonObject co = section("colors");
     overlay::Color c;
