@@ -47,6 +47,7 @@ bool envOn(const char *name, bool dflt)
 Renderer::Renderer(const Config &cfg)
 {
     m_blur = cfg.blur;
+    m_blurType = cfg.blurType;
     m_dim = cfg.dim;
     m_thumb = cfg.thumbShow;
     m_thumbFrac = cfg.thumbHeight;
@@ -959,7 +960,7 @@ void Renderer::renderOutput(Output &out)
         usx, usy, 0.0f, 0.0f,            // uvScale, uvOffset
         prim, 1.0f, m_dim, m_blur,       // primaries, exposure, dim, blur
         0.0f, 0.0f, 0.0f, 1.0f,          // bgColor (true black, opaque)
-        0.0f, 0.0f, 0.0f, 0.0f           // rounding (disabled for background)
+        0.0f, 0.0f, 0.0f, float(m_blurType) // rounding: xy radius, z enable(off), w = blur style
     };
     std::memcpy(out.uboMapped, ubo, sizeof(ubo));
 

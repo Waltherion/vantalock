@@ -143,6 +143,7 @@ private:
     bool m_deviceReady = false;
     float m_dim = 0.5f;   // background dim multiplier (linear); VANTALOCK_DIM
     float m_blur = 0.02f; // background blur radius in uv units; VANTALOCK_BLUR
+    int m_blurType = 0;   // background blur style (see Config::blurType)
     bool m_thumb = true;        // draw the sharp thumbnail
     float m_thumbFrac = 0.24f;  // thumbnail height as fraction of output
     float m_thumbY = 0.55f;     // thumbnail vertical centre

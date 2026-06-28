@@ -40,8 +40,11 @@ struct Theme {
 Theme loadTheme();
 
 // Render the time (HH:mm), weekday + date lines, and the password field onto a
-// fixed-size transparent canvas using the given config (fonts, colours, layout).
-// Fixed size keeps the Vulkan texture + descriptors stable across refreshes.
-TextImage renderOverlay(const State &state, const Config &cfg);
+// transparent 16:9 canvas using the given config (fonts, colours, layout). The
+// reference layout is 1920x1080; `scale` multiplies the canvas + all absolute
+// pixel sizes (fonts, field, shadow) so the text rasterises 1:1 at the output's
+// native resolution (sharp on 4K). The chosen scale must stay constant across
+// refreshes so the Vulkan texture size stays stable.
+TextImage renderOverlay(const State &state, const Config &cfg, double scale = 1.0);
 
 } // namespace overlay

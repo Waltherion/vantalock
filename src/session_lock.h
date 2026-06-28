@@ -112,4 +112,5 @@ private:
     bool m_finished = false;
     bool m_running = true;
     bool m_deviceReady = false;
+    double m_overlayScale = 1.0; // overlay canvas scale (output height / 1080) for sharp 4K text
 };

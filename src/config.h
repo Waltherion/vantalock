@@ -10,6 +10,7 @@
 struct Config {
     // Background
     float blur = 0.02f; // blur radius in uv units (0 = sharp)
+    int blurType = 0;   // 0 frosted (sparse-tap glass), 1 gaussian, 2 box, 3 pixelate, 4 none
     float dim = 0.5f;   // dim multiplier in linear (1 = none)
 
     // Thumbnail

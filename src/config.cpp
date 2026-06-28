@@ -21,8 +21,9 @@ const char *kDefaultConfig = R"JSONC(// VantaLock configuration (JSONC: // and /
 // fractions (0..1) of a 1920x1080 reference canvas drawn across the whole screen.
 {
   "background": {
-    "blur": 0.02,   // blur radius (0 = sharp)
-    "dim": 0.5      // dim multiplier (1 = none)
+    "blur": 0.02,         // blur radius (0 = sharp)
+    "blurType": "frosted",// "frosted" (sparse-tap glass), "gaussian" (smooth), "box", "pixelate", "none"
+    "dim": 0.5            // dim multiplier (1 = none)
   },
   "thumbnail": {
     "show": true,
@@ -144,6 +145,13 @@ Config Config::load()
     const QJsonObject bg = section("background");
     cfg.blur = float(bg.value("blur").toDouble(cfg.blur));
     cfg.dim = float(bg.value("dim").toDouble(cfg.dim));
+    const QString bt = bg.value("blurType").toString().trimmed().toLower();
+    if (bt == QLatin1String("gaussian"))      cfg.blurType = 1;
+    else if (bt == QLatin1String("box"))      cfg.blurType = 2;
+    else if (bt == QLatin1String("pixelate")) cfg.blurType = 3;
+    else if (bt == QLatin1String("none"))     cfg.blurType = 4;
+    else if (bt == QLatin1String("frosted"))  cfg.blurType = 0;
+    // empty/unknown -> keep the default (frosted)
 
     const QJsonObject th = section("thumbnail");
     cfg.thumbShow = th.value("show").toBool(cfg.thumbShow);

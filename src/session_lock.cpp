@@ -350,7 +350,11 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
             return;
         }
         // Upload the overlay (clock + password field) before any output binds it.
-        const overlay::TextImage ov = overlay::renderOverlay(m_ostate, m_config);
+        // Render the canvas at this output's native resolution so the text is sharp
+        // (the 1920x1080 reference is upscaled otherwise -> blurry on 4K). The scale
+        // is fixed here and reused on every refresh so the texture size stays stable.
+        m_overlayScale = ctx->h > 0 ? double(ctx->h) / 1080.0 : 1.0;
+        const overlay::TextImage ov = overlay::renderOverlay(m_ostate, m_config, m_overlayScale);
         if (ov.valid())
             m_renderer->uploadOverlay(ov.rgba.data(), ov.w, ov.h);
         m_deviceReady = true;
@@ -393,7 +397,7 @@ void SessionLock::refreshOverlay()
 {
     if (!m_deviceReady)
         return;
-    const overlay::TextImage ov = overlay::renderOverlay(m_ostate, m_config);
+    const overlay::TextImage ov = overlay::renderOverlay(m_ostate, m_config, m_overlayScale);
     if (ov.valid())
         m_renderer->uploadOverlay(ov.rgba.data(), ov.w, ov.h);
     // Re-render directly (NOT via frame callbacks): on Wayland, requestUpdate from

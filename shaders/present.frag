@@ -31,20 +31,53 @@ layout(std140, binding = 0) uniform U {
 
 layout(binding = 1) uniform sampler2D tex;
 
-// Cheap multi-tap gaussian blur around a texture coordinate. The lock screen is
-// rendered once, so the tap count is free; the radius is in texture-uv units.
-const int BLUR_R = 6;
+// Background blur. The lock screen is rendered infrequently, so tap count is cheap.
+// The radius is in texture-uv units; the *style* is carried in u.rounding.w (free on
+// the background, where corner rounding is disabled):
+//   0 frosted  - sparse-tap gaussian (the original "ridged glass" look), R=6
+//   1 gaussian - dense-tap gaussian (smooth), R=10
+//   2 box      - equal-weight taps (harder blur), R=6
+//   3 pixelate - snap to a coarse grid sized by the radius
+//   4 none     - sharp
 vec3 sampleBlurred(vec2 uv)
 {
     if (u.blur <= 0.0)
         return texture(tex, uv).rgb;
-    const float sigma = float(BLUR_R) * 0.5;
-    const float step = u.blur / float(BLUR_R);
+    int bt = int(u.rounding.w + 0.5);
+
+    if (bt == 4)
+        return texture(tex, uv).rgb;
+
+    if (bt == 3) { // pixelate
+        vec2 cells = max(vec2(2.0), vec2(1.0) / vec2(u.blur));
+        return texture(tex, (floor(uv * cells) + 0.5) / cells).rgb;
+    }
+
+    if (bt == 1) { // dense gaussian (smooth)
+        const int R = 10;
+        const float sigma = float(R) * 0.5;
+        const float step = u.blur / float(R);
+        vec3 sum = vec3(0.0);
+        float wsum = 0.0;
+        for (int y = -R; y <= R; ++y) {
+            for (int x = -R; x <= R; ++x) {
+                float w = exp(-float(x * x + y * y) / (2.0 * sigma * sigma));
+                sum += texture(tex, uv + vec2(float(x), float(y)) * step).rgb * w;
+                wsum += w;
+            }
+        }
+        return sum / wsum;
+    }
+
+    // frosted (0, default - original look) or box (2): sparse R=6
+    const int R = 6;
+    const float sigma = float(R) * 0.5;
+    const float step = u.blur / float(R);
     vec3 sum = vec3(0.0);
     float wsum = 0.0;
-    for (int y = -BLUR_R; y <= BLUR_R; ++y) {
-        for (int x = -BLUR_R; x <= BLUR_R; ++x) {
-            float w = exp(-float(x * x + y * y) / (2.0 * sigma * sigma));
+    for (int y = -R; y <= R; ++y) {
+        for (int x = -R; x <= R; ++x) {
+            float w = (bt == 2) ? 1.0 : exp(-float(x * x + y * y) / (2.0 * sigma * sigma));
             sum += texture(tex, uv + vec2(float(x), float(y)) * step).rgb * w;
             wsum += w;
         }

@@ -79,9 +79,11 @@ Theme loadTheme()
     return t;
 }
 
-TextImage renderOverlay(const State &state, const Config &cfg)
+TextImage renderOverlay(const State &state, const Config &cfg, double scale)
 {
-    QImage img(kW, kH, QImage::Format_RGBA8888);
+    const int W = int(kW * scale + 0.5);
+    const int H = int(kH * scale + 0.5);
+    QImage img(W, H, QImage::Format_RGBA8888);
     img.fill(Qt::transparent);
 
     const QDateTime now = QDateTime::currentDateTime();
@@ -95,7 +97,7 @@ TextImage renderOverlay(const State &state, const Config &cfg)
         QFont f;
         if (!family.isEmpty())
             f.setFamily(family);
-        f.setPointSize(pt);
+        f.setPointSizeF(pt * scale);
         f.setWeight(w);
         return f;
     };
@@ -109,30 +111,31 @@ TextImage renderOverlay(const State &state, const Config &cfg)
         p.setFont(fnt);
         const QFontMetrics fm(fnt);
         const QRect br = fm.boundingRect(text);
-        const int x = (kW - br.width()) / 2 - br.left();
+        const int x = (W - br.width()) / 2 - br.left();
         const int y = cy - br.center().y();
+        const int sh = int(3 * scale + 0.5);
         p.setPen(shadow);
-        p.drawText(x + 3, y + 3, text); // soft shadow for legibility
+        p.drawText(x + sh, y + sh, text); // soft shadow for legibility
         p.setPen(col);
         p.drawText(x, y, text);
     };
 
     // Clock at the top, then weekday on its own line, then date + year below.
-    drawCentred(time, font(cfg.timeSize, QFont::DemiBold), int(cfg.timeY * kH), qc(cfg.text));
-    drawCentred(weekday, font(cfg.weekdaySize, QFont::Normal), int(cfg.weekdayY * kH), qc(cfg.text));
-    drawCentred(date, font(cfg.dateSize, QFont::Normal), int(cfg.dateY * kH), qc(cfg.text));
+    drawCentred(time, font(cfg.timeSize, QFont::DemiBold), int(cfg.timeY * H), qc(cfg.text));
+    drawCentred(weekday, font(cfg.weekdaySize, QFont::Normal), int(cfg.weekdayY * H), qc(cfg.text));
+    drawCentred(date, font(cfg.dateSize, QFont::Normal), int(cfg.dateY * H), qc(cfg.text));
 
     // Password field: a rounded pill at cfg.fieldY (top), with dots for typed
     // characters, or a status line while verifying / after a failure.
-    const int fieldW = cfg.fieldW, fieldH = cfg.fieldH;
-    const QRectF field((kW - fieldW) / 2.0, cfg.fieldY * kH, fieldW, fieldH);
+    const int fieldW = int(cfg.fieldW * scale + 0.5), fieldH = int(cfg.fieldH * scale + 0.5);
+    const QRectF field((W - fieldW) / 2.0, cfg.fieldY * H, fieldW, fieldH);
     const QColor accent = state.error ? qc(cfg.error) : qc(cfg.accent);
 
     p.setPen(Qt::NoPen);
     p.setBrush(QColor(0, 0, 0, 110));
     p.drawRoundedRect(field, fieldH / 2.0, fieldH / 2.0);
     QPen border(QColor(accent.red(), accent.green(), accent.blue(), 180));
-    border.setWidth(2);
+    border.setWidthF(2.0 * scale);
     p.setPen(border);
     p.setBrush(Qt::NoBrush);
     p.drawRoundedRect(field, fieldH / 2.0, fieldH / 2.0);
@@ -165,9 +168,9 @@ TextImage renderOverlay(const State &state, const Config &cfg)
     p.end();
 
     TextImage out;
-    out.w = kW;
-    out.h = kH;
-    out.rgba.resize(size_t(kW) * kH * 4);
+    out.w = W;
+    out.h = H;
+    out.rgba.resize(size_t(W) * H * 4);
     std::memcpy(out.rgba.data(), img.constBits(), out.rgba.size());
     return out;
 }
