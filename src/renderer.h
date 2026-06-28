@@ -148,4 +148,10 @@ private:
     float m_thumbFrac = 0.24f;  // thumbnail height as fraction of output
     float m_thumbY = 0.55f;     // thumbnail vertical centre
     float m_thumbRadius = 0.0f; // corner rounding, fraction of thumb height (0 = square)
+
+    // Rainbow overlay (static unless m_rainbowPhase is animated by the caller)
+    bool m_rainbow = false;
+    std::vector<float> m_rainbowStops; // flattened rgba in 0..1, 4 floats per stop (max 8 used)
+    float m_rainbowPeriod = 0.0f;      // px per cycle (<=0 = span once across the diagonal)
+    float m_rainbowPhase = 0.0f;       // 0..1 scroll offset; the animation loop advances this
 };

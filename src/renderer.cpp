@@ -54,6 +54,16 @@ Renderer::Renderer(const Config &cfg)
     m_thumbY = cfg.thumbY;
     m_thumbRadius = cfg.thumbRadius;
 
+    m_rainbow = cfg.rainbow && cfg.rainbowStops.size() >= 2;
+    m_rainbowPeriod = cfg.rainbowPeriod;
+    for (size_t i = 0; i < cfg.rainbowStops.size() && i < 8; ++i) {
+        const overlay::Color &c = cfg.rainbowStops[i];
+        m_rainbowStops.push_back(c.r / 255.0f);
+        m_rainbowStops.push_back(c.g / 255.0f);
+        m_rainbowStops.push_back(c.b / 255.0f);
+        m_rainbowStops.push_back(c.a / 255.0f);
+    }
+
     VkApplicationInfo app{};
     app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     app.pApplicationName = "vantalock";
@@ -742,7 +752,7 @@ bool Renderer::createUboSet(VkBuffer &buf, VkDeviceMemory &mem, void *&mapped, V
 {
     VkBufferCreateInfo bi{};
     bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bi.size = 20 * sizeof(float); // present UBO is 20 floats (incl. rounding vec4)
+    bi.size = 48 * sizeof(float); // present/thumb use 20; the overlay UBO needs 44 (rainbow params + 8 stops)
     bi.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     VKCHECK(vkCreateBuffer(m_device, &bi, nullptr, &buf), "ubo buffer");
@@ -1031,7 +1041,21 @@ void Renderer::renderOutput(Output &out)
     // Overlay (clock/date/password): a full-screen alpha-blended quad. UI is
     // positioned within the canvas itself (clock top, password bottom).
     if (m_overlayReady && out.overlayPipeline && out.overlayDescriptor && out.overlayVbo) {
-        float ovUbo[16] = { scale, sdr, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+        // Scalar params (12 floats) then a std140 vec4 stops[8] at float index 12 (byte 48).
+        float ovUbo[48] = { scale, sdr };
+        ovUbo[2] = m_rainbow ? 1.0f : 0.0f; // rainbowOn
+        ovUbo[3] = m_rainbowPhase;          // scroll offset (0 = static)
+        if (m_rainbow) {
+            const float ow = float(out.extent.width), oh = float(out.extent.height);
+            const float k = 0.70710678f; // 45-degree band direction
+            const float per = m_rainbowPeriod > 0.0f ? m_rainbowPeriod : (k * (ow + oh));
+            ovUbo[4] = k * ow / per; // bandFreqX (cycles per unit v_uv.x)
+            ovUbo[5] = k * oh / per; // bandFreqY
+            ovUbo[6] = float(int(m_rainbowStops.size()) / 4); // stop count
+            ovUbo[7] = 0.0f;         // bloomStrength (added in a later step)
+            for (size_t i = 0; i < m_rainbowStops.size() && i < 32; ++i)
+                ovUbo[12 + i] = m_rainbowStops[i]; // 8 stops max, rgba each
+        }
         std::memcpy(out.overlayUboMapped, ovUbo, sizeof(ovUbo));
 
         const float verts[16] = {

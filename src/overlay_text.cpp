@@ -115,19 +115,12 @@ TextImage renderOverlay(const State &state, const Config &cfg, double scale)
     QColor shadow = qc(cfg.shadow);
     shadow.setAlphaF(shadow.alphaF() * std::clamp(double(cfg.shadowStrength), 0.0, 1.0));
 
-    // Optional STATIC rainbow gradient for the clock/date. A horizontal gradient in
-    // logical canvas coordinates, so each centred line samples its slice of one band.
-    // period <= 0 spans the whole width once; period > 0 repeats every `period` px.
+    // Optional rainbow: rainbow-able elements (clock/date, field outline + dots) are drawn
+    // WHITE here; the overlay shader multiplies a rolling 45-degree band onto them (white ->
+    // band colour). Dark fill/shadow stay dark. Off -> themed colours. This keeps the CPU
+    // panel static, so scrolling is purely a shader uniform (no re-render / re-upload).
     const bool rainbowOn = cfg.rainbow && cfg.rainbowStops.size() >= 2;
-    QLinearGradient rainbowGrad;
-    if (rainbowOn) {
-        const double per = cfg.rainbowPeriod > 0.0f ? double(cfg.rainbowPeriod) * scale : double(W);
-        rainbowGrad = QLinearGradient(0.0, 0.0, per, 0.0);
-        rainbowGrad.setSpread(cfg.rainbowPeriod > 0.0f ? QGradient::RepeatSpread : QGradient::PadSpread);
-        const int n = int(cfg.rainbowStops.size());
-        for (int i = 0; i < n; ++i)
-            rainbowGrad.setColorAt(double(i) / (n - 1), qc(cfg.rainbowStops[size_t(i)]));
-    }
+    const QColor rainbowMask(255, 255, 255);
 
     auto drawCentred = [&](const QString &text, const QFont &fnt, int cy, const QColor &col,
                            bool useRainbow = false) {
@@ -139,10 +132,7 @@ TextImage renderOverlay(const State &state, const Config &cfg, double scale)
         const int sh = qMax(0, int(cfg.shadowOffset * scale + 0.5)); // configurable, scales with resolution
         p.setPen(shadow);
         p.drawText(x + sh, y + sh, text); // soft shadow for legibility
-        if (useRainbow && rainbowOn)
-            p.setPen(QPen(QBrush(rainbowGrad), 0));
-        else
-            p.setPen(col);
+        p.setPen(useRainbow && rainbowOn ? rainbowMask : col);
         p.drawText(x, y, text);
     };
 
@@ -160,7 +150,8 @@ TextImage renderOverlay(const State &state, const Config &cfg, double scale)
     p.setPen(Qt::NoPen);
     p.setBrush(QColor(0, 0, 0, 110));
     p.drawRoundedRect(field, fieldH / 2.0, fieldH / 2.0);
-    QPen border(QColor(accent.red(), accent.green(), accent.blue(), 180));
+    QPen border(rainbowOn ? QColor(255, 255, 255, 180)
+                          : QColor(accent.red(), accent.green(), accent.blue(), 180));
     border.setWidthF(2.0 * scale);
     p.setPen(border);
     p.setBrush(Qt::NoBrush);
@@ -185,7 +176,7 @@ TextImage renderOverlay(const State &state, const Config &cfg, double scale)
         double x = field.center().x() - totalW / 2.0;
         const double y = field.center().y();
         p.setPen(Qt::NoPen);
-        p.setBrush(accent);
+        p.setBrush(rainbowOn ? rainbowMask : accent);
         for (int i = 0; i < shown; ++i) {
             p.drawEllipse(QPointF(x, y), r, r);
             x += gap;
