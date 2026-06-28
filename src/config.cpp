@@ -57,7 +57,7 @@ const char *kDefaultConfig = R"JSONC(// VantaLock configuration (JSONC: // and /
     "width": 200,
     "height": 35,
     "y": 0.68,      // field TOP as a fraction of screen height
-    "radius": 0.5   // corner rounding as a fraction of field height (0.5 = pill, 0 = sharp)
+    "radius": 0     // corner rounding as a fraction of field height (0 = sharp, 0.5 = pill)
   },
   // ---- Colours: empty string = inherit the active theme's colour ----
   "colors": {
