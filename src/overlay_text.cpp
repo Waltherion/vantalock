@@ -83,7 +83,8 @@ Theme loadTheme()
     return t;
 }
 
-TextImage renderOverlay(const State &state, const Config &cfg, double scale)
+TextImage renderOverlay(const State &state, const Config &cfg, double scale,
+                        double outputW, double imageAspect)
 {
     const int W = int(kW * scale + 0.5);
     const int H = int(kH * scale + 0.5);
@@ -182,6 +183,27 @@ TextImage renderOverlay(const State &state, const Config &cfg, double scale)
             p.drawEllipse(QPointF(x, y), r, r);
             x += gap;
         }
+    }
+
+    // Optional thumbnail border. The thumbnail is drawn by the renderer in OUTPUT coordinates;
+    // compute the same rect here (any aspect) and convert x into the 16:9 panel so it lands on the
+    // thumbnail edge regardless of screen format (y maps 1:1, panel H == output H). White when
+    // rainbow is on (the overlay shader colours it with the band); otherwise the accent colour.
+    if (cfg.thumbShow && cfg.thumbBorder > 0.0f && imageAspect > 0.0 && outputW > 0.0) {
+        const double oh = H, ow = outputW;
+        double thh = cfg.thumbHeight * oh;
+        double thw = thh * imageAspect;
+        if (thw > 0.85 * ow) { thw = 0.85 * ow; thh = thw / imageAspect; }
+        const double tx = (ow - thw) * 0.5;
+        const double ty = cfg.thumbY * oh - thh * 0.5;
+        const double kx = double(W) / ow; // output-x -> panel-x (1.0 on 16:9)
+        const QRectF tr(tx * kx, ty, thw * kx, thh);
+        const double rad = std::clamp(double(cfg.thumbRadius), 0.0, 0.5) * thh;
+        QPen tb(rainbowOn ? QColor(255, 255, 255) : qc(cfg.accent));
+        tb.setWidthF(std::max(1.0, cfg.thumbBorder * scale));
+        p.setPen(tb);
+        p.setBrush(Qt::NoBrush);
+        p.drawRoundedRect(tr, rad * kx, rad);
     }
     p.end();
 

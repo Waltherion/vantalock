@@ -354,7 +354,10 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
         // (the 1920x1080 reference is upscaled otherwise -> blurry on 4K). The scale
         // is fixed here and reused on every refresh so the texture size stays stable.
         m_overlayScale = ctx->h > 0 ? double(ctx->h) / 1080.0 : 1.0;
-        const overlay::TextImage ov = overlay::renderOverlay(m_ostate, m_config, m_overlayScale);
+        m_overlayOutW = double(ctx->w);
+        m_overlayAspect = (m_image.w > 1 && m_image.h > 1) ? double(m_image.w) / double(m_image.h) : 0.0;
+        const overlay::TextImage ov = overlay::renderOverlay(m_ostate, m_config, m_overlayScale,
+                                                             m_overlayOutW, m_overlayAspect);
         if (ov.valid())
             m_renderer->uploadOverlay(ov.rgba.data(), ov.w, ov.h);
         m_deviceReady = true;
@@ -397,7 +400,8 @@ void SessionLock::refreshOverlay()
 {
     if (!m_deviceReady)
         return;
-    const overlay::TextImage ov = overlay::renderOverlay(m_ostate, m_config, m_overlayScale);
+    const overlay::TextImage ov = overlay::renderOverlay(m_ostate, m_config, m_overlayScale,
+                                                         m_overlayOutW, m_overlayAspect);
     if (ov.valid())
         m_renderer->uploadOverlay(ov.rgba.data(), ov.w, ov.h);
     // Re-render directly (NOT via frame callbacks): on Wayland, requestUpdate from

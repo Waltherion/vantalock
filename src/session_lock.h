@@ -113,4 +113,6 @@ private:
     bool m_running = true;
     bool m_deviceReady = false;
     double m_overlayScale = 1.0; // overlay canvas scale (output height / 1080) for sharp 4K text
+    double m_overlayOutW = 0.0;  // real output width, for the aspect-correct thumbnail border
+    double m_overlayAspect = 0.0;// wallpaper aspect (0 = none/fallback)
 };

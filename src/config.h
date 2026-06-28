@@ -19,6 +19,7 @@ struct Config {
     float thumbHeight = 0.24f; // height as fraction of output
     float thumbY = 0.55f;      // vertical centre as fraction of output
     float thumbRadius = 0.08f; // corner radius as fraction of thumb height (0 = square)
+    float thumbBorder = 1.0f;  // border thickness around the thumbnail in reference px (0 = off)
 
     // Fonts
     std::string fontFamily; // empty = system default

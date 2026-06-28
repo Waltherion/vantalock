@@ -45,6 +45,9 @@ Theme loadTheme();
 // pixel sizes (fonts, field, shadow) so the text rasterises 1:1 at the output's
 // native resolution (sharp on 4K). The chosen scale must stay constant across
 // refreshes so the Vulkan texture size stays stable.
-TextImage renderOverlay(const State &state, const Config &cfg, double scale = 1.0);
+// outputW + imageAspect let the optional thumbnail border be placed in the output's real
+// coordinates (any aspect) and converted into the 16:9 panel, so it lands on the thumbnail.
+TextImage renderOverlay(const State &state, const Config &cfg, double scale = 1.0,
+                        double outputW = 0.0, double imageAspect = 0.0);
 
 } // namespace overlay

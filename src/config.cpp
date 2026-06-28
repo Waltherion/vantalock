@@ -36,7 +36,8 @@ const char *kDefaultConfig = R"JSONC(// VantaLock configuration (JSONC: // and /
     "show": true,   // false = hide the thumbnail entirely
     "height": 0.24, // height as a fraction of screen height
     "y": 0.55,      // vertical centre as a fraction
-    "radius": 0.08  // corner rounding, fraction of thumb height (0 = square)
+    "radius": 0.08, // corner rounding, fraction of thumb height (0 = square)
+    "border": 1     // border thickness around the thumbnail in reference px (0 = off); rides the rainbow band
   },
   // ---- Fonts: point sizes on the 1920x1080 reference (they scale to your output) ----
   "fonts": {
@@ -191,6 +192,7 @@ Config Config::load()
     cfg.thumbHeight = float(th.value("height").toDouble(cfg.thumbHeight));
     cfg.thumbY = float(th.value("y").toDouble(cfg.thumbY));
     cfg.thumbRadius = float(th.value("radius").toDouble(cfg.thumbRadius));
+    cfg.thumbBorder = float(th.value("border").toDouble(cfg.thumbBorder));
 
     const QJsonObject ft = section("fonts");
     cfg.fontFamily = ft.value("family").toString().toStdString();
