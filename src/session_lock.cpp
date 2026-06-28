@@ -486,6 +486,11 @@ bool SessionLock::run()
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC, &start);
 
+    // Rainbow scroll: only when enabled with a non-zero speed do we render continuously
+    // (~30fps). Otherwise the loop stays event-driven (minute tick / keypress) at ~zero cost.
+    const bool animating = m_config.rainbow && m_config.rainbowStops.size() >= 2
+                           && m_config.rainbowSpeed != 0.0f;
+
     const int fd = wl_display_get_fd(m_display);
     while (m_running && !m_finished) {
         // Prepare-read pattern so we can poll with a timeout for the safety net.
@@ -509,6 +514,8 @@ bool SessionLock::run()
             if (remain < pollTimeout)
                 pollTimeout = int(remain);
         }
+        if (animating && pollTimeout > 33)
+            pollTimeout = 33; // ~30fps while the band is rolling
 
         struct pollfd pfds[2];
         pfds[0] = { fd, POLLIN, 0 };
@@ -540,6 +547,20 @@ bool SessionLock::run()
         if (lt.tm_min != m_lastMinute) {
             m_lastMinute = lt.tm_min;
             refreshOverlay();
+        }
+
+        // Advance the rolling band: update the phase from elapsed time and re-render
+        // every output. No overlay re-upload -- the white mask is static; only `phase`
+        // changes -- so this is just the (cheap) per-frame redraw.
+        if (animating) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            const double elapsed = double(now.tv_sec - start.tv_sec)
+                + double(now.tv_nsec - start.tv_nsec) / 1e9;
+            m_renderer->setRainbowPhase(float(m_config.rainbowSpeed * elapsed));
+            for (auto &o : m_outputs)
+                if (o->configured)
+                    m_renderer->renderOutput(o->render);
         }
     }
 

@@ -90,6 +90,9 @@ public:
     bool uploadOverlay(const uint8_t *rgba, int w, int h);
     bool hasOverlay() const { return m_overlayReady; }
 
+    // Scroll offset for the rainbow band; the lock loop advances it to animate.
+    void setRainbowPhase(float phase) { m_rainbowPhase = phase; }
+
     // Acquire -> record -> submit -> present one frame for this output.
     void renderOutput(Output &out);
 

@@ -73,8 +73,10 @@ const char *kDefaultConfig = R"JSONC(// VantaLock configuration (JSONC: // and /
   // "rainbow": {
   //   "enabled": true,
   //   "stops": ["#ff5555", "#ffb86c", "#50fa7b", "#8be9fd", "#bd93f9"], // >=2 hex colours
-  //   "period": 0,       // px per cycle on the 1920-wide reference (0 = span full width once; smaller = tighter repeats)
-  //   "brightness": 2.5  // band luminance (1 = faithful sRGB; >1 pushes HDR brightness so vivid colours pop)
+  //   "period": 0,        // px per cycle on the 1920-wide reference (0 = span full width once; smaller = tighter repeats)
+  //   "brightness": 2.5,  // band luminance (1 = faithful sRGB; >1 pushes HDR brightness so vivid colours pop)
+  //   "speed": 0          // band scroll in cycles/sec (0 = static, near-zero cost; negative = reverse).
+  //                       // NOTE: >0 renders continuously on the GPU while the screen is on -- on laptops prefer 0.
   // }
 
   // Optional env overrides (no file edit; handy for quick tests):
@@ -218,6 +220,7 @@ Config Config::load()
     cfg.rainbow = rb.value("enabled").toBool(cfg.rainbow);
     cfg.rainbowPeriod = float(rb.value("period").toDouble(cfg.rainbowPeriod));
     cfg.rainbowBrightness = float(rb.value("brightness").toDouble(cfg.rainbowBrightness));
+    cfg.rainbowSpeed = float(rb.value("speed").toDouble(cfg.rainbowSpeed));
     const QJsonArray stops = rb.value("stops").toArray();
     if (!stops.isEmpty()) {
         cfg.rainbowStops.clear();
