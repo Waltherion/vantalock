@@ -1,6 +1,7 @@
 #include "hdr_image.h"
 
 #include <QFile>
+#include <QFileInfo>
 #include <QString>
 #include <QImage>
 #include <QImageReader>
@@ -663,18 +664,28 @@ HdrImage decodeSdrImage(const QString &path)
 
 HdrImage decodeImage(const QString &path, int maxDim)
 {
-    if (path.endsWith(QStringLiteral(".avif"), Qt::CaseInsensitive))
+    // Dispatch on the file extension, but resolve symlinks first: the wallpaper is
+    // often referenced through an extension-less symlink (vantapaper's state link
+    // ~/.local/state/vantapaper/wallpapers/<OUTPUT>), and matching ".avif"/".jxl"/...
+    // on "DP-1" would wrongly fall through to the SDR/QImage path and fail for true
+    // HDR formats. canonicalFilePath() follows the whole symlink chain to the real
+    // file; if it cannot (broken link / unmounted source) we fall back to the path.
+    QString name = QFileInfo(path).canonicalFilePath();
+    if (name.isEmpty())
+        name = path;
+
+    if (name.endsWith(QStringLiteral(".avif"), Qt::CaseInsensitive))
         return decodeAvif(path, maxDim);
 
-    if (path.endsWith(QStringLiteral(".jxl"), Qt::CaseInsensitive))
+    if (name.endsWith(QStringLiteral(".jxl"), Qt::CaseInsensitive))
         return decodeJxl(path);
 
-    if (path.endsWith(QStringLiteral(".heic"), Qt::CaseInsensitive)
-        || path.endsWith(QStringLiteral(".heif"), Qt::CaseInsensitive))
+    if (name.endsWith(QStringLiteral(".heic"), Qt::CaseInsensitive)
+        || name.endsWith(QStringLiteral(".heif"), Qt::CaseInsensitive))
         return decodeHeic(path);
 
-    if (path.endsWith(QStringLiteral(".jpg"), Qt::CaseInsensitive)
-        || path.endsWith(QStringLiteral(".jpeg"), Qt::CaseInsensitive)) {
+    if (name.endsWith(QStringLiteral(".jpg"), Qt::CaseInsensitive)
+        || name.endsWith(QStringLiteral(".jpeg"), Qt::CaseInsensitive)) {
         HdrImage uhdr = decodeUltraHdr(path); // UltraHDR gain-map JPEG, if it is one
         if (uhdr.valid())
             return uhdr;
