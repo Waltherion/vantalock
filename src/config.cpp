@@ -62,8 +62,11 @@ const char *kDefaultConfig = R"JSONC(// VantaLock configuration (JSONC: // and /
     "text": "",     // clock / date / dots
     "accent": "",   // password-field border + dots
     "error": "",    // wrong-password feedback
-    "shadow": ""    // text shadow
-  }
+    "shadow": ""    // text-shadow colour
+  },
+
+  // ---- Text shadow geometry (the colour itself is "shadow" under "colors") ----
+  // "shadow": { "offset": 1.4, "strength": 0.5 } // offset = reference px (0 = none); strength = alpha mult (0..1)
 
   // Optional env overrides (no file edit; handy for quick tests):
   //   VANTALOCK_BLUR=<r>   VANTALOCK_DIM=<d>      override blur / dim
@@ -197,6 +200,10 @@ Config Config::load()
     if (parseColor(co.value("accent").toString(), c)) cfg.accent = c;
     if (parseColor(co.value("error").toString(), c)) cfg.error = c;
     if (parseColor(co.value("shadow").toString(), c)) cfg.shadow = c;
+
+    const QJsonObject sh = section("shadow");
+    cfg.shadowOffset = float(sh.value("offset").toDouble(cfg.shadowOffset));
+    cfg.shadowStrength = float(sh.value("strength").toDouble(cfg.shadowStrength));
 
     return cfg;
 }

@@ -14,6 +14,7 @@
 #include <QRegularExpression>
 #include <QString>
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 
@@ -109,14 +110,14 @@ TextImage renderOverlay(const State &state, const Config &cfg, double scale)
     // Subtle drop shadow for legibility: a tight offset (so the text doesn't read as
     // "floating") and a softened alpha (the theme's $shadow is often fully opaque).
     QColor shadow = qc(cfg.shadow);
-    shadow.setAlphaF(shadow.alphaF() * 0.5);
+    shadow.setAlphaF(shadow.alphaF() * std::clamp(double(cfg.shadowStrength), 0.0, 1.0));
     auto drawCentred = [&](const QString &text, const QFont &fnt, int cy, const QColor &col) {
         p.setFont(fnt);
         const QFontMetrics fm(fnt);
         const QRect br = fm.boundingRect(text);
         const int x = (W - br.width()) / 2 - br.left();
         const int y = cy - br.center().y();
-        const int sh = qMax(1, int(1.4 * scale + 0.5)); // tight offset, scales with resolution
+        const int sh = qMax(0, int(cfg.shadowOffset * scale + 0.5)); // configurable, scales with resolution
         p.setPen(shadow);
         p.drawText(x + sh, y + sh, text); // soft shadow for legibility
         p.setPen(col);

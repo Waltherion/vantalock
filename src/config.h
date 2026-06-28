@@ -42,6 +42,10 @@ struct Config {
     overlay::Color error;
     overlay::Color shadow;
 
+    // Text drop shadow (the shadow colour itself is `shadow` above)
+    float shadowOffset = 1.4f;   // offset in reference px (scales with resolution; 0 = none)
+    float shadowStrength = 0.5f; // multiplier on the shadow alpha (0 = invisible, 1 = full)
+
     // Load defaults (seeded from the active theme) merged with the user's JSONC.
     static Config load();
     static std::string configPath();
