@@ -47,11 +47,14 @@ const char *kDefaultConfig = R"JSONC(// VantaLock configuration (JSONC: // and /
     "date": 22,     // date + year line
     "field": 12     // password-field status text
   },
-  // ---- Clock/date vertical positions (fractions of screen height) ----
+  // ---- Clock/date vertical positions (fractions of screen height) + formatting ----
   "clock": {
     "timeY": 0.22,
     "weekdayY": 0.37,
-    "dateY": 0.41
+    "dateY": 0.41,
+    "format": "24h",   // "24h" (e.g. 14:05) or "12h" (e.g. 2:05 PM)
+    "locale": "",      // "" = system locale; else e.g. "da_DK", "en_US" (localises weekday/month/AM-PM)
+    "dateFormat": ""   // "" = "d MMMM yyyy" (localised); else a Qt date format, e.g. "yyyy-MM-dd" or "dddd d. MMMM"
   },
   // ---- Password field ----
   "field": {
@@ -205,6 +208,9 @@ Config Config::load()
     cfg.timeY = float(ck.value("timeY").toDouble(cfg.timeY));
     cfg.weekdayY = float(ck.value("weekdayY").toDouble(cfg.weekdayY));
     cfg.dateY = float(ck.value("dateY").toDouble(cfg.dateY));
+    cfg.timeFormat = ck.value("format").toString(QString::fromStdString(cfg.timeFormat)).toStdString();
+    cfg.locale = ck.value("locale").toString().toStdString();
+    cfg.dateFormat = ck.value("dateFormat").toString().toStdString();
 
     const QJsonObject fl = section("field");
     cfg.fieldW = fl.value("width").toInt(cfg.fieldW);

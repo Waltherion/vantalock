@@ -970,7 +970,7 @@ void Renderer::renderOutput(Output &out)
     float ubo[20] = {
         scale, sdr, imageHdr, 0.0f,      // scale, sdr, imageHdr, rot
         usx, usy, 0.0f, 0.0f,            // uvScale, uvOffset
-        prim, 1.0f, m_dim, m_blur,       // primaries, exposure, dim, blur
+        prim, 1.0f, m_dim * m_sceneFade, m_blur, // primaries, exposure, dim*fade, blur
         0.0f, 0.0f, 0.0f, 1.0f,          // bgColor (true black, opaque)
         0.0f, 0.0f, 0.0f, float(m_blurType) // rounding: xy radius, z enable(off), w = blur style
     };
@@ -990,7 +990,7 @@ void Renderer::renderOutput(Output &out)
     float thumbUbo[20] = {
         scale, sdr, imageHdr, 0.0f,
         1.0f, 1.0f, 0.0f, 0.0f,
-        prim, 1.0f, 1.0f, 0.0f,
+        prim, 1.0f, m_sceneFade, 0.0f,   // primaries, exposure, dim=fade, blur(sharp)
         0.0f, 0.0f, 0.0f, 1.0f,
         rx, ry, roundEnable, 0.0f        // rounding
     };
@@ -1048,6 +1048,7 @@ void Renderer::renderOutput(Output &out)
         ovUbo[2] = m_rainbow ? 1.0f : 0.0f; // rainbowOn
         ovUbo[3] = m_rainbowPhase;          // scroll offset (0 = static)
         ovUbo[7] = m_bloomStrength;         // glow halo (works with or without rainbow)
+        ovUbo[9] = m_sceneFade;             // fadeAlpha (fade-in; 1 = fully shown)
         if (m_rainbow) {
             const float ow = float(out.extent.width), oh = float(out.extent.height);
             const float k = 0.70710678f; // 45-degree band direction
@@ -1061,11 +1062,12 @@ void Renderer::renderOutput(Output &out)
         }
         std::memcpy(out.overlayUboMapped, ovUbo, sizeof(ovUbo));
 
+        const float dx = m_overlayOffsetX; // wrong-password shake (NDC x shift)
         const float verts[16] = {
-            -1.0f, -1.0f, 0.0f, 0.0f, // TL
-             1.0f, -1.0f, 1.0f, 0.0f, // TR
-            -1.0f,  1.0f, 0.0f, 1.0f, // BL
-             1.0f,  1.0f, 1.0f, 1.0f, // BR
+            -1.0f + dx, -1.0f, 0.0f, 0.0f, // TL
+             1.0f + dx, -1.0f, 1.0f, 0.0f, // TR
+            -1.0f + dx,  1.0f, 0.0f, 1.0f, // BL
+             1.0f + dx,  1.0f, 1.0f, 1.0f, // BR
         };
         std::memcpy(out.overlayVboMapped, verts, sizeof(verts));
 

@@ -92,10 +92,15 @@ TextImage renderOverlay(const State &state, const Config &cfg, double scale,
     img.fill(Qt::transparent);
 
     const QDateTime now = QDateTime::currentDateTime();
-    const QString time = now.time().toString(QStringLiteral("HH:mm"));
-    const QLocale loc(QLocale::English);
+    const QLocale loc = cfg.locale.empty() ? QLocale::system()
+                                           : QLocale(QString::fromStdString(cfg.locale));
+    const bool h12 = (cfg.timeFormat == "12h" || cfg.timeFormat == "12");
+    const QString time = loc.toString(now.time(),
+                                      h12 ? QStringLiteral("h:mm AP") : QStringLiteral("HH:mm"));
     const QString weekday = loc.toString(now.date(), QStringLiteral("dddd"));
-    const QString date = loc.toString(now.date(), QStringLiteral("d MMMM yyyy"));
+    const QString dateFmt = cfg.dateFormat.empty() ? QStringLiteral("d MMMM yyyy")
+                                                   : QString::fromStdString(cfg.dateFormat);
+    const QString date = loc.toString(now.date(), dateFmt);
 
     const QString family = QString::fromStdString(cfg.fontFamily);
     auto font = [&](int pt, QFont::Weight w) {
@@ -183,6 +188,13 @@ TextImage renderOverlay(const State &state, const Config &cfg, double scale,
             p.drawEllipse(QPointF(x, y), r, r);
             x += gap;
         }
+    }
+
+    // Caps Lock warning, just below the field (important when the password won't take).
+    if (state.capsLock) {
+        drawCentred(QStringLiteral("CAPS LOCK"),
+                    font(std::max(9, cfg.fieldFontSize - 1), QFont::DemiBold),
+                    int(field.bottom() + fieldH * 0.85), qc(cfg.accent));
     }
 
     // Optional thumbnail border. The thumbnail is drawn by the renderer in OUTPUT coordinates;

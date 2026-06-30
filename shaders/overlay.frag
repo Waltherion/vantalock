@@ -25,7 +25,7 @@ layout(std140, binding = 0) uniform U {
     float stopCount;     // number of valid stops (2..8)
     float bloomStrength; // glow amount (0 = off)
     float brightness;    // band luminance multiplier (>1 = HDR pop)
-    float _p1;
+    float fadeAlpha;     // overlay opacity multiplier (fade-in on lock; 1 = fully shown)
     float _p2;
     float _p3;
     vec4 stops[8];       // rgba gradient stops (sRGB 0..1)
@@ -98,5 +98,5 @@ void main()
         c += glow * u.bloomStrength;
         outA = max(pan.a, clamp(bs.a * u.bloomStrength, 0.0, 1.0)); // make the halo visible over the bg
     }
-    fragColor = vec4(c, outA);
+    fragColor = vec4(c, outA * u.fadeAlpha);
 }

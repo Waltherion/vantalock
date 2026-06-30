@@ -87,6 +87,13 @@ private:
     void onAuthResult();
     int m_lastMinute = -1;
 
+    // Overlay animations (monotonic seconds; <0 = inactive). Drive the renderer's
+    // fade/shake each loop iteration; both are self-terminating + fail-safe (after
+    // their duration the overlay snaps back to fully shown + centred).
+    static double nowSec();
+    double m_fadeStart = -1.0;  // lock appeared -> overlay fades in
+    double m_shakeStart = -1.0; // wrong password -> field shakes
+
     // Keyboard / password state.
     xkb_context *m_xkb = nullptr;
     xkb_keymap *m_keymap = nullptr;

@@ -13,7 +13,9 @@
 #include <QProcess>
 
 #include <xkbcommon/xkbcommon.h>
+#include <xkbcommon/xkbcommon-names.h>
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -93,10 +95,20 @@ const wl_output_listener kOutputListener = {
 
 // ---- SessionLock ----------------------------------------------------------
 
+double SessionLock::nowSec()
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return double(ts.tv_sec) + double(ts.tv_nsec) / 1e9;
+}
+
 SessionLock::SessionLock(const HdrImage &image, const Config &config)
     : m_image(image)
     , m_config(config)
 {
+    // Reserve up front so appends while typing never reallocate (a realloc would leave a
+    // plaintext copy of the password in freed memory that secureZero can't reach).
+    m_password.reserve(256);
 }
 
 SessionLock::~SessionLock()
@@ -247,8 +259,14 @@ void SessionLock::onKeymap(int32_t fd, uint32_t size)
 
 void SessionLock::onModifiers(uint32_t depressed, uint32_t latched, uint32_t locked, uint32_t group)
 {
-    if (m_xkbState)
-        xkb_state_update_mask(m_xkbState, depressed, latched, locked, 0, 0, group);
+    if (!m_xkbState)
+        return;
+    xkb_state_update_mask(m_xkbState, depressed, latched, locked, 0, 0, group);
+    const bool caps = xkb_state_led_name_is_active(m_xkbState, XKB_LED_NAME_CAPS) > 0;
+    if (caps != m_ostate.capsLock) {
+        m_ostate.capsLock = caps;
+        refreshOverlay();
+    }
 }
 
 void SessionLock::onKey(uint32_t key, uint32_t state)
@@ -279,7 +297,7 @@ void SessionLock::onKey(uint32_t key, uint32_t state)
         return;
     }
     if (sym == XKB_KEY_Escape) {
-        m_password.clear();
+        secureZero(m_password);
         m_ostate.passwordLen = 0;
         m_ostate.error = false;
         refreshOverlay();
@@ -313,7 +331,7 @@ void SessionLock::onAuthResult()
 {
     const bool ok = m_auth.consumeResult();
     m_ostate.verifying = false;
-    m_password.clear();
+    secureZero(m_password);
     m_ostate.passwordLen = 0;
     if (ok) {
         std::fprintf(stderr, "vantalock: authentication succeeded -> unlocking\n");
@@ -321,6 +339,7 @@ void SessionLock::onAuthResult()
     } else {
         std::fprintf(stderr, "vantalock: authentication failed\n");
         m_ostate.error = true;
+        m_shakeStart = nowSec(); // kick off the wrong-password shake
         refreshOverlay();
     }
 }
@@ -385,6 +404,12 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
             }
         }
         ctx->configured = true;
+        // Start the fade-in from the very first presented frame (alpha 0), so the lock
+        // eases in rather than snapping. Once only; later outputs join the same fade.
+        if (m_fadeStart < 0.0) {
+            m_fadeStart = nowSec();
+            m_renderer->setSceneFade(0.0f);
+        }
         m_renderer->renderOutput(ctx->render);
     } else if (ctx->render.extent.width != w || ctx->render.extent.height != h) {
         // Resize: rebuild swapchain (keep the cm tag + surface).
@@ -492,8 +517,15 @@ bool SessionLock::run()
 
     // Rainbow scroll: only when enabled with a non-zero speed do we render continuously
     // (~30fps). Otherwise the loop stays event-driven (minute tick / keypress) at ~zero cost.
-    const bool animating = m_config.rainbow && m_config.rainbowStops.size() >= 2
-                           && m_config.rainbowSpeed != 0.0f;
+    const bool rainbowAnim = m_config.rainbow && m_config.rainbowStops.size() >= 2
+                             && m_config.rainbowSpeed != 0.0f;
+
+    // Overlay animation tuning (fade-in on lock; damped shake on wrong password).
+    constexpr double kFadeSec = 0.70;    // fade-in duration
+    constexpr double kShakeSec = 0.45;   // shake duration
+    constexpr double kShakeAmp = 0.014;  // shake amplitude (NDC x)
+    constexpr double kShakeOmega = 48.0; // shake angular frequency
+    constexpr double kShakeDecay = 0.13; // shake exponential decay
 
     const int fd = wl_display_get_fd(m_display);
     while (m_running && !m_finished) {
@@ -518,8 +550,12 @@ bool SessionLock::run()
             if (remain < pollTimeout)
                 pollTimeout = int(remain);
         }
-        if (animating && pollTimeout > 33)
-            pollTimeout = 33; // ~30fps while the band is rolling
+        // Render continuously while anything animates: the rainbow band (~30fps) or a
+        // fade-in / shake (~60fps for smoothness).
+        const bool maybeAnim = rainbowAnim || m_fadeStart >= 0.0 || m_shakeStart >= 0.0;
+        const int animCap = (m_fadeStart >= 0.0 || m_shakeStart >= 0.0) ? 16 : 33;
+        if (maybeAnim && pollTimeout > animCap)
+            pollTimeout = animCap;
 
         struct pollfd pfds[2];
         pfds[0] = { fd, POLLIN, 0 };
@@ -553,15 +589,40 @@ bool SessionLock::run()
             refreshOverlay();
         }
 
-        // Advance the rolling band: update the phase from elapsed time and re-render
-        // every output. No overlay re-upload -- the white mask is static; only `phase`
-        // changes -- so this is just the (cheap) per-frame redraw.
-        if (animating) {
-            struct timespec now;
-            clock_gettime(CLOCK_MONOTONIC, &now);
-            const double elapsed = double(now.tv_sec - start.tv_sec)
-                + double(now.tv_nsec - start.tv_nsec) / 1e9;
-            m_renderer->setRainbowPhase(float(m_config.rainbowSpeed * elapsed));
+        // Per-frame animation: rolling rainbow band + overlay fade-in + wrong-password
+        // shake. Each is independent; re-render every output if ANY is active. The overlay
+        // texture isn't re-uploaded -- these are cheap uniform/vertex tweaks. Both fade and
+        // shake are self-terminating (snap back to fully shown + centred after their span).
+        const double tnow = nowSec();
+        float ovAlpha = 1.0f, ovOffsetX = 0.0f;
+        bool fadeActive = false, shakeActive = false;
+        if (m_fadeStart >= 0.0) {
+            const double k = (tnow - m_fadeStart) / kFadeSec;
+            if (k < 1.0) {
+                const double x = k < 0.0 ? 0.0 : k;
+                ovAlpha = float(x * x * (3.0 - 2.0 * x)); // smoothstep ease
+                fadeActive = true;
+            } else {
+                m_fadeStart = -1.0; // done -> stays fully shown
+            }
+        }
+        if (m_shakeStart >= 0.0) {
+            const double se = tnow - m_shakeStart;
+            if (se < kShakeSec) {
+                ovOffsetX = float(kShakeAmp * std::sin(se * kShakeOmega) * std::exp(-se / kShakeDecay));
+                shakeActive = true;
+            } else {
+                m_shakeStart = -1.0; // done -> recentred
+            }
+        }
+        m_renderer->setSceneFade(ovAlpha);
+        m_renderer->setOverlayOffsetX(ovOffsetX);
+
+        if (rainbowAnim || fadeActive || shakeActive) {
+            if (rainbowAnim) {
+                const double elapsed = tnow - (double(start.tv_sec) + double(start.tv_nsec) / 1e9);
+                m_renderer->setRainbowPhase(float(m_config.rainbowSpeed * elapsed));
+            }
             for (auto &o : m_outputs)
                 if (o->configured)
                     m_renderer->renderOutput(o->render);

@@ -33,6 +33,11 @@ struct Config {
     float weekdayY = 0.37f; // weekday line
     float dateY = 0.41f;    // date + year line
 
+    // Time / date formatting
+    std::string timeFormat = "24h"; // "24h" (HH:mm) or "12h" (h:mm AP)
+    std::string locale;             // empty = system locale; else e.g. "da_DK", "en_US" (localises weekday/month/AM-PM)
+    std::string dateFormat;         // empty = "d MMMM yyyy" (localised); else a Qt date-format string (e.g. "yyyy-MM-dd")
+
     // Password field
     int fieldW = 200;     // px on the 1920x1080 canvas
     int fieldH = 35;      // px

@@ -45,6 +45,16 @@ std::string currentUser()
 
 } // namespace
 
+void secureZero(std::string &s)
+{
+    if (!s.empty()) {
+        volatile char *p = const_cast<volatile char *>(s.data());
+        for (size_t i = 0; i < s.size(); ++i)
+            p[i] = 0;
+    }
+    s.clear();
+}
+
 Authenticator::Authenticator()
 {
     m_eventFd = eventfd(0, EFD_CLOEXEC);
@@ -76,7 +86,8 @@ void Authenticator::authenticate(const std::string &password)
 
 void Authenticator::run(std::string password)
 {
-    const std::string pw = std::move(password);
+    std::string pw = std::move(password);
+    secureZero(password); // the moved-from source may still hold a copy of the bytes
     pam_conv conv{ converse, const_cast<void *>(static_cast<const void *>(&pw)) };
     pam_handle_t *h = nullptr;
 
@@ -93,6 +104,8 @@ void Authenticator::run(std::string password)
     }
     if (h)
         pam_end(h, r);
+
+    secureZero(pw); // don't leave the plaintext password in memory after the check
 
     m_success.store(r == PAM_SUCCESS);
     m_busy.store(false);

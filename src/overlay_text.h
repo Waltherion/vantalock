@@ -20,6 +20,7 @@ struct State {
     int passwordLen = 0;  // number of typed characters (shown as dots)
     bool verifying = false; // PAM check in progress
     bool error = false;     // last attempt failed
+    bool capsLock = false;  // Caps Lock is active (warn the user)
 };
 
 struct Color {

@@ -93,6 +93,12 @@ public:
     // Scroll offset for the rainbow band; the lock loop advances it to animate.
     void setRainbowPhase(float phase) { m_rainbowPhase = phase; }
 
+    // Overlay/scene animation, driven per-frame by the lock loop:
+    //   fade    = whole-scene opacity 0..1 (fade-in from black: background + thumbnail + overlay)
+    //   offsetX = horizontal shift in NDC, overlay only (wrong-password shake; 0 = centred)
+    void setSceneFade(float f) { m_sceneFade = f; }
+    void setOverlayOffsetX(float ndc) { m_overlayOffsetX = ndc; }
+
     // Acquire -> record -> submit -> present one frame for this output.
     void renderOutput(Output &out);
 
@@ -158,5 +164,9 @@ private:
     float m_rainbowPeriod = 0.0f;      // px per cycle (<=0 = span once across the diagonal)
     float m_rainbowPhase = 0.0f;       // 0..1 scroll offset; the animation loop advances this
     float m_rainbowBrightness = 1.0f;  // band luminance multiplier (>1 = HDR pop)
+
+    // Fade/shake (set by the lock loop). Default = fully shown, centred.
+    float m_sceneFade = 1.0f;          // whole-scene opacity (fade-in from black)
+    float m_overlayOffsetX = 0.0f;     // NDC x shift, overlay only (wrong-password shake)
     float m_bloomStrength = 0.0f;      // glow halo around the text (0 = off)
 };

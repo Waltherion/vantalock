@@ -4,6 +4,10 @@
 #include <string>
 #include <thread>
 
+// Overwrite a string's bytes (volatile, so the compiler can't elide it) and clear it,
+// so a plaintext password doesn't linger in freed memory after a PAM check.
+void secureZero(std::string &s);
+
 // Background PAM authentication. PAM can block (modules, the ~2s failure delay),
 // so the check runs on a worker thread and signals completion via an eventfd that
 // the main Wayland loop polls. The session never unlocks unless consumeResult()
