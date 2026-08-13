@@ -135,6 +135,13 @@ bool parseColor(const QString &in, overlay::Color &out)
 
 std::string Config::configPath()
 {
+    // VANTALOCK_CONFIG=<file> reads a specific config instead of the usual one --
+    // handy with --preview to look at another theme's lock screen without switching
+    // themes (the normal path is a symlink into the active theme).
+    const QString override = qEnvironmentVariable("VANTALOCK_CONFIG");
+    if (!override.isEmpty())
+        return override.toStdString();
+
     QString base = qEnvironmentVariable("XDG_CONFIG_HOME");
     if (base.isEmpty())
         base = QDir::homePath() + QStringLiteral("/.config");
@@ -154,8 +161,14 @@ Config Config::load()
 
     const QString path = QString::fromStdString(configPath());
 
-    // Write the commented default on first run.
+    // Write the commented default on first run -- but never for an explicitly given
+    // VANTALOCK_CONFIG path (a typo there should not litter a theme directory).
     if (!QFile::exists(path)) {
+        if (!qEnvironmentVariable("VANTALOCK_CONFIG").isEmpty()) {
+            std::fprintf(stderr, "vantalock: VANTALOCK_CONFIG not found: %s (using defaults)\n",
+                         qPrintable(path));
+            return cfg;
+        }
         QDir().mkpath(QFileInfo(path).absolutePath());
         QFile f(path);
         if (f.open(QIODevice::WriteOnly | QIODevice::Text)) {

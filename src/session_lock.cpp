@@ -6,6 +6,7 @@
 
 #include <wayland-client.h>
 #include "ext-session-lock-v1-client-protocol.h"
+#include "xdg-shell-client-protocol.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -48,6 +49,38 @@ void surfConfigure(void *data, ext_session_lock_surface_v1 *, uint32_t serial, u
     ctx->owner->onSurfaceConfigure(ctx, serial, w, h);
 }
 const ext_session_lock_surface_v1_listener kSurfaceListener = { surfConfigure };
+
+// ---- preview-only (xdg-shell) --------------------------------------------
+// A normal fullscreen window standing in for the lock surface, so the screen can be
+// shown (and screenshotted) without ever locking the session.
+
+void xdgPing(void *, xdg_wm_base *base, uint32_t serial) { xdg_wm_base_pong(base, serial); }
+const xdg_wm_base_listener kXdgBaseListener = { xdgPing };
+
+void xdgSurfConfigure(void *data, xdg_surface *surf, uint32_t serial)
+{
+    auto *ctx = static_cast<SessionLock::OutputCtx *>(data);
+    xdg_surface_ack_configure(surf, serial);
+    // Size comes from the toplevel configure that precedes this; fall back to the
+    // output's own size if the compositor left it up to us.
+    ctx->owner->onSurfaceConfigure(ctx, 0, ctx->w, ctx->h);
+}
+const xdg_surface_listener kXdgSurfaceListener = { xdgSurfConfigure };
+
+void xdgTopConfigure(void *data, xdg_toplevel *, int32_t w, int32_t h, wl_array *)
+{
+    auto *ctx = static_cast<SessionLock::OutputCtx *>(data);
+    if (w > 0 && h > 0) { ctx->w = uint32_t(w); ctx->h = uint32_t(h); }
+}
+void xdgTopClose(void *data, xdg_toplevel *)
+{
+    static_cast<SessionLock::OutputCtx *>(data)->owner->onFinished();
+}
+void xdgTopConfigureBounds(void *, xdg_toplevel *, int32_t, int32_t) {}
+void xdgTopWmCapabilities(void *, xdg_toplevel *, wl_array *) {}
+const xdg_toplevel_listener kXdgToplevelListener = {
+    xdgTopConfigure, xdgTopClose, xdgTopConfigureBounds, xdgTopWmCapabilities
+};
 
 void kbKeymap(void *data, wl_keyboard *, uint32_t, int32_t fd, uint32_t size)
 {
@@ -119,6 +152,10 @@ SessionLock::~SessionLock()
             m_renderer->destroyOutput(o->render);
         if (o->lockSurface)
             ext_session_lock_surface_v1_destroy(o->lockSurface);
+        if (o->xdgToplevel)
+            xdg_toplevel_destroy(o->xdgToplevel);
+        if (o->xdgSurface)
+            xdg_surface_destroy(o->xdgSurface);
         if (o->surface)
             wl_surface_destroy(o->surface);
     }
@@ -131,6 +168,7 @@ SessionLock::~SessionLock()
     if (m_keyboard) wl_keyboard_destroy(m_keyboard);
     if (m_seat) wl_seat_destroy(m_seat);
     if (m_lockManager) ext_session_lock_manager_v1_destroy(m_lockManager);
+    if (m_xdgBase) xdg_wm_base_destroy(m_xdgBase);
     if (m_compositor) wl_compositor_destroy(m_compositor);
     if (m_display) wl_display_disconnect(m_display);
 }
@@ -141,8 +179,16 @@ void SessionLock::onGlobal(wl_registry *reg, uint32_t name, const char *iface, u
         m_compositor = static_cast<wl_compositor *>(
             wl_registry_bind(reg, name, &wl_compositor_interface, version < 4 ? version : 4));
     } else if (std::strcmp(iface, ext_session_lock_manager_v1_interface.name) == 0) {
+        // Hard guard: in preview we never even bind the lock manager, so locking the
+        // session is impossible there regardless of any logic error further down.
+        if (m_preview)
+            return;
         m_lockManager = static_cast<ext_session_lock_manager_v1 *>(
             wl_registry_bind(reg, name, &ext_session_lock_manager_v1_interface, 1));
+    } else if (std::strcmp(iface, xdg_wm_base_interface.name) == 0) {
+        m_xdgBase = static_cast<xdg_wm_base *>(
+            wl_registry_bind(reg, name, &xdg_wm_base_interface, version < 2 ? version : 2));
+        xdg_wm_base_add_listener(m_xdgBase, &kXdgBaseListener, this); // must pong or get killed
     } else if (std::strcmp(iface, wl_seat_interface.name) == 0) {
         m_seat = static_cast<wl_seat *>(
             wl_registry_bind(reg, name, &wl_seat_interface, version < 5 ? version : 5));
@@ -321,6 +367,17 @@ void SessionLock::submitPassword()
 {
     if (m_password.empty() || m_auth.busy())
         return;
+    if (m_preview) {
+        // Never touch PAM in preview; just show the wrong-password state so it can
+        // be screenshotted (Esc still quits).
+        m_password.clear();
+        m_ostate.passwordLen = 0;
+        m_ostate.verifying = false;
+        m_ostate.error = true;
+        m_shakeStart = nowSec();
+        refreshOverlay();
+        return;
+    }
     m_ostate.verifying = true;
     m_ostate.error = false;
     refreshOverlay();
@@ -347,8 +404,21 @@ void SessionLock::onAuthResult()
 void SessionLock::setupOutput(OutputCtx *ctx)
 {
     ctx->surface = wl_compositor_create_surface(m_compositor);
-    ctx->lockSurface = ext_session_lock_v1_get_lock_surface(m_lock, ctx->surface, ctx->output);
-    ext_session_lock_surface_v1_add_listener(ctx->lockSurface, &kSurfaceListener, ctx);
+    if (m_preview) {
+        // Fullscreen window on this output instead of a lock surface. Everything
+        // downstream (Vulkan surface, HDR tagging, renderer) is identical.
+        ctx->xdgSurface = xdg_wm_base_get_xdg_surface(m_xdgBase, ctx->surface);
+        xdg_surface_add_listener(ctx->xdgSurface, &kXdgSurfaceListener, ctx);
+        ctx->xdgToplevel = xdg_surface_get_toplevel(ctx->xdgSurface);
+        xdg_toplevel_add_listener(ctx->xdgToplevel, &kXdgToplevelListener, ctx);
+        xdg_toplevel_set_title(ctx->xdgToplevel, "VantaLock preview");
+        xdg_toplevel_set_app_id(ctx->xdgToplevel, "vantalock-preview");
+        xdg_toplevel_set_fullscreen(ctx->xdgToplevel, ctx->output);
+        wl_surface_commit(ctx->surface); // no buffer yet: wait for the first configure
+    } else {
+        ctx->lockSurface = ext_session_lock_v1_get_lock_surface(m_lock, ctx->surface, ctx->output);
+        ext_session_lock_surface_v1_add_listener(ctx->lockSurface, &kSurfaceListener, ctx);
+    }
 
     VkSurfaceKHR vks = m_renderer->createWaylandSurface(m_display, ctx->surface);
     ctx->render.surface = vks;
@@ -356,10 +426,15 @@ void SessionLock::setupOutput(OutputCtx *ctx)
 
 void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w, uint32_t h)
 {
-    ext_session_lock_surface_v1_ack_configure(ctx->lockSurface, serial);
+    if (ctx->lockSurface)             // preview acks on the xdg_surface instead
+        ext_session_lock_surface_v1_ack_configure(ctx->lockSurface, serial);
     wl_display_flush(m_display);
-    ctx->w = w;
-    ctx->h = h;
+    if (w > 0 && h > 0) {             // preview may pass its cached toplevel size
+        ctx->w = w;
+        ctx->h = h;
+    }
+    if (ctx->w == 0 || ctx->h == 0)
+        return;                       // no size agreed yet; wait for the next configure
 
     // Lazily bring up the Vulkan device on the first configured output.
     if (!m_deviceReady) {
@@ -385,7 +460,7 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
     const bool wantHdr = monitorWantsHdr(ctx->name);
 
     if (!ctx->configured) {
-        if (!m_renderer->createOutput(ctx->render, ctx->render.surface, w, h, m_image, wantHdr)) {
+        if (!m_renderer->createOutput(ctx->render, ctx->render.surface, ctx->w, ctx->h, m_image, wantHdr)) {
             std::fprintf(stderr, "vantalock: createOutput failed\n");
             return;
         }
@@ -411,12 +486,12 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
             m_renderer->setSceneFade(0.0f);
         }
         m_renderer->renderOutput(ctx->render);
-    } else if (ctx->render.extent.width != w || ctx->render.extent.height != h) {
+    } else if (ctx->render.extent.width != ctx->w || ctx->render.extent.height != ctx->h) {
         // Resize: rebuild swapchain (keep the cm tag + surface).
         m_renderer->destroyOutput(ctx->render);
         ctx->render = Renderer::Output{};
         ctx->render.surface = m_renderer->createWaylandSurface(m_display, ctx->surface);
-        m_renderer->createOutput(ctx->render, ctx->render.surface, w, h, m_image, wantHdr);
+        m_renderer->createOutput(ctx->render, ctx->render.surface, ctx->w, ctx->h, m_image, wantHdr);
         m_renderer->renderOutput(ctx->render);
     }
 }
@@ -482,8 +557,12 @@ bool SessionLock::run()
     wl_display_roundtrip(m_display); // bind globals + collect outputs
     wl_display_roundtrip(m_display); // collect wl_output name/mode events
 
-    if (!m_compositor || !m_lockManager) {
+    if (!m_compositor || (!m_preview && !m_lockManager)) {
         std::fprintf(stderr, "vantalock: missing wl_compositor or ext_session_lock_manager_v1\n");
+        return false;
+    }
+    if (m_preview && !m_xdgBase) {
+        std::fprintf(stderr, "vantalock: preview needs xdg_wm_base\n");
         return false;
     }
     if (m_outputs.empty()) {
@@ -497,8 +576,12 @@ bool SessionLock::run()
         return false;
     }
 
-    m_lock = ext_session_lock_manager_v1_lock(m_lockManager);
-    ext_session_lock_v1_add_listener(m_lock, &kLockListener, this);
+    if (m_preview) {
+        std::fprintf(stderr, "vantalock: PREVIEW mode - the session is NOT locked. Esc quits.\n");
+    } else {
+        m_lock = ext_session_lock_manager_v1_lock(m_lockManager);
+        ext_session_lock_v1_add_listener(m_lock, &kLockListener, this);
+    }
 
     for (auto &o : m_outputs)
         setupOutput(o.get());
@@ -543,7 +626,8 @@ bool SessionLock::run()
             const long remain = timeoutMs - elapsed;
             if (remain <= 0) {
                 wl_display_cancel_read(m_display);
-                std::fprintf(stderr, "vantalock: safety timeout -> unlocking\n");
+                std::fprintf(stderr, "vantalock: safety timeout -> %s\n",
+                             m_preview ? "closing preview" : "unlocking");
                 m_running = false;
                 break;
             }
@@ -628,6 +712,9 @@ bool SessionLock::run()
                     m_renderer->renderOutput(o->render);
         }
     }
+
+    if (m_preview)
+        return true; // nothing was ever locked; a clean window close is success
 
     if (m_finished) {
         // Compositor never granted (or revoked) the lock: destroy without unlocking.

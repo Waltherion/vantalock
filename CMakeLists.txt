@@ -51,6 +51,9 @@ wl_protocol("${WAYLAND_PROTOCOLS_DIR}/staging/color-management/color-management-
     "color-management-v1" CM_SOURCES)
 wl_protocol("${WAYLAND_PROTOCOLS_DIR}/staging/ext-session-lock/ext-session-lock-v1.xml"
     "ext-session-lock-v1" LOCK_SOURCES)
+# Only used by `--preview` (a normal fullscreen window instead of a lock surface).
+wl_protocol("${WAYLAND_PROTOCOLS_DIR}/stable/xdg-shell/xdg-shell.xml"
+    "xdg-shell" XDG_SOURCES)
 
 # --- Compile shaders to SPIR-V embedded as C arrays ------------------------
 set(SPV_DIR "${CMAKE_CURRENT_BINARY_DIR}/spv")
@@ -76,6 +79,7 @@ add_executable(vantalock
     src/auth.cpp
     ${CM_SOURCES}
     ${LOCK_SOURCES}
+    ${XDG_SOURCES}
 )
 
 # renderer.cpp #includes the generated SPIR-V initialisers.

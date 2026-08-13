@@ -25,6 +25,9 @@ struct wl_surface;
 struct ext_session_lock_manager_v1;
 struct ext_session_lock_v1;
 struct ext_session_lock_surface_v1;
+struct xdg_wm_base;
+struct xdg_surface;
+struct xdg_toplevel;
 
 namespace cm {
 class SurfaceColor;
@@ -42,6 +45,13 @@ public:
     // Connect, lock, and run the event loop until Esc / finished. Returns true on
     // a clean exit (locked then unlocked), false if locking failed.
     bool run();
+
+    // PREVIEW: render the exact same screen into a normal fullscreen window per
+    // output and NEVER take the session lock -- for screenshots / design work.
+    // Esc (or closing the window) quits; Enter only triggers the wrong-password
+    // shake, so every visual state can be captured without touching PAM.
+    // The locking path above is untouched by this flag.
+    void setPreview(bool on) { m_preview = on; }
 
     // Non-locking diagnostic: connect, create a throwaway surface, and report the
     // Vulkan GPU + whether the scRGB HDR swapchain format is available. Never locks.
@@ -64,6 +74,8 @@ public:
         std::string name; // connector name (e.g. "DP-1"), from wl_output.name
         wl_surface *surface = nullptr;
         ext_session_lock_surface_v1 *lockSurface = nullptr;
+        xdg_surface *xdgSurface = nullptr;   // preview only
+        xdg_toplevel *xdgToplevel = nullptr; // preview only
         std::unique_ptr<cm::SurfaceColor> color;
         Renderer::Output render;
         bool configured = false;
@@ -111,6 +123,8 @@ private:
     wl_keyboard *m_keyboard = nullptr;
     ext_session_lock_manager_v1 *m_lockManager = nullptr;
     ext_session_lock_v1 *m_lock = nullptr;
+    xdg_wm_base *m_xdgBase = nullptr; // preview only
+    bool m_preview = false;
 
     std::unique_ptr<Renderer> m_renderer;
     std::vector<std::unique_ptr<OutputCtx>> m_outputs;

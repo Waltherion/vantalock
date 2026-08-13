@@ -31,6 +31,7 @@ int main(int argc, char **argv)
 
     bool probeOnly = false;
     bool decodeTest = false;
+    bool preview = false;
     QString path;
     for (int i = 1; i < argc; ++i) {
         const QString a = QString::fromLocal8Bit(argv[i]);
@@ -38,6 +39,8 @@ int main(int argc, char **argv)
             probeOnly = true;
         else if (a == QStringLiteral("--decode"))
             decodeTest = true;
+        else if (a == QStringLiteral("--preview"))
+            preview = true;
         else if (!a.startsWith(QStringLiteral("--")))
             path = a;
     }
@@ -118,6 +121,7 @@ int main(int argc, char **argv)
 
     const Config cfg = Config::load();
     SessionLock lock(img, cfg);
+    lock.setPreview(preview); // --preview: show the screen in a window, never lock
     const bool ok = lock.run();
     std::fprintf(stderr, "vantalock: exit (clean=%d)\n", int(ok));
     return ok ? 0 : 1;
