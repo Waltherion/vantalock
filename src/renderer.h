@@ -140,6 +140,12 @@ private:
     VkImage m_texImage = VK_NULL_HANDLE;
     VkDeviceMemory m_texMem = VK_NULL_HANDLE;
     VkImageView m_texView = VK_NULL_HANDLE;
+    // Mip chains feed the blur/bloom prefiltering (see generateMipmaps). Gated on the
+    // format supporting linear blits; without it we keep the old single-level path.
+    uint32_t m_texMips = 1;
+    uint32_t m_overlayMips = 1;
+    bool m_texLinearBlit = false;
+    bool m_overlayLinearBlit = false;
 
     // Shared overlay texture (clock/date panel), fixed size across refreshes.
     VkImage m_overlayTex = VK_NULL_HANDLE;

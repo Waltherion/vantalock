@@ -55,14 +55,22 @@ vec3 sampleBlurred(vec2 uv)
 
     if (bt == 1) { // dense gaussian (smooth)
         const int R = 10;
-        const float sigma = float(R) * 0.5;
-        const float step = u.blur / float(R);
+        // sigma = R/3 completes the falloff (last tap ~1% weight) instead of cutting
+        // it off at 2 sigma, which leaves a box-like rim around high-contrast edges.
+        const float sigma = float(R) / 3.0;
+        // Circular in PIXELS: one uv step is not the same distance in x and y unless
+        // the image is square, so scale y by the aspect (was 1.78x wider than tall).
+        vec2 ts = vec2(textureSize(tex, 0));
+        vec2 step = vec2(u.blur, u.blur * ts.x / ts.y) / float(R);
+        // Prefilter: sample the mip whose texels match the tap spacing, so sparse taps
+        // average their gap instead of point-sampling it (that aliasing is the artefact).
+        float lod = max(log2(max(step.x * ts.x, step.y * ts.y)), 0.0);
         vec3 sum = vec3(0.0);
         float wsum = 0.0;
         for (int y = -R; y <= R; ++y) {
             for (int x = -R; x <= R; ++x) {
                 float w = exp(-float(x * x + y * y) / (2.0 * sigma * sigma));
-                sum += texture(tex, uv + vec2(float(x), float(y)) * step).rgb * w;
+                sum += textureLod(tex, uv + vec2(float(x), float(y)) * step, lod).rgb * w;
                 wsum += w;
             }
         }

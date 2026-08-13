@@ -59,12 +59,22 @@ vec4 bloomSample(vec2 uv)
     const float radius = 0.012; // uv-x units
     ivec2 sz = textureSize(panel, 0);
     vec2 stp = vec2(radius, radius * float(sz.x) / float(sz.y)) / float(R);
+
+    // Sample the mip level whose texels are as large as the gap between taps, so each
+    // tap is the AVERAGE of the area it stands for. Without this the 7x7 tap grid is
+    // ~15px apart on a 4K panel and the glow steps visibly around glyph edges.
+    float gapPx = max(stp.x * float(sz.x), stp.y * float(sz.y));
+    float lod = max(log2(gapPx), 0.0);
+
+    // sigma = R/2 truncates the gaussian at 11% weight -> a hard rim on the glow.
+    // R/1.6 lands the last tap near 2 sigma-and-a-half: a soft, complete falloff.
+    const float sigma = float(R) / 1.6;
     vec4 acc = vec4(0.0);
     float wsum = 0.0;
     for (int y = -R; y <= R; ++y) {
         for (int x = -R; x <= R; ++x) {
-            float w = exp(-float(x * x + y * y) / 8.0);
-            vec4 s = texture(panel, uv + vec2(float(x), float(y)) * stp);
+            float w = exp(-float(x * x + y * y) / (2.0 * sigma * sigma));
+            vec4 s = textureLod(panel, uv + vec2(float(x), float(y)) * stp, lod);
             acc.rgb += s.rgb * s.a * w; // premultiplied
             acc.a += s.a * w;
             wsum += w;
@@ -95,7 +105,16 @@ void main()
         vec3 glow = (u.sdr > 0.5) ? glowCol : srgbToLinear(glowCol) * u.scale;
         if (u.rainbowOn > 0.5 && u.sdr < 0.5)
             glow *= u.brightness;
-        c += glow * u.bloomStrength;
+        if (u.sdr > 0.5) {
+            // SDR has no headroom: adding the glow drives channels past 1.0 and the
+            // hard clip takes ALL THREE to 1.0 -> coloured text turns flat white.
+            // Screen blend approaches 1.0 asymptotically instead, so the glow still
+            // brightens but the hue survives. HDR keeps the additive glow (it has the
+            // headroom, and that overbright bloom is the point there).
+            c = vec3(1.0) - (vec3(1.0) - c) * (vec3(1.0) - clamp(glow * u.bloomStrength, 0.0, 1.0));
+        } else {
+            c += glow * u.bloomStrength;
+        }
         outA = max(pan.a, clamp(bs.a * u.bloomStrength, 0.0, 1.0)); // make the halo visible over the bg
     }
     fragColor = vec4(c, outA * u.fadeAlpha);

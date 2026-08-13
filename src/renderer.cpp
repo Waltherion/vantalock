@@ -42,6 +42,71 @@ bool envOn(const char *name, bool dflt)
         return dflt;
     return !(v[0] == '0' && v[1] == '\0');
 }
+
+uint32_t mipCount(int w, int h)
+{
+    uint32_t n = 1;
+    int s = w > h ? w : h;
+    while (s > 1) { s >>= 1; ++n; }
+    return n;
+}
+
+// Build the mip chain by successive linear blits. The blur/bloom loops sample a mip
+// whose texels match their tap spacing, so each tap represents the whole area between
+// taps -- that is what turns a sparse, aliased tap grid into a smooth blur.
+// `img` must be created with TRANSFER_SRC|TRANSFER_DST and be in TRANSFER_DST_OPTIMAL
+// with level 0 filled. Leaves every level in SHADER_READ_ONLY_OPTIMAL.
+void generateMipmaps(VkCommandBuffer cmd, VkImage img, int w, int h, uint32_t mips)
+{
+    VkImageMemoryBarrier b{};
+    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = img;
+    b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+    int mw = w, mh = h;
+    for (uint32_t i = 1; i < mips; ++i) {
+        // level i-1: TRANSFER_DST -> TRANSFER_SRC
+        b.subresourceRange.baseMipLevel = i - 1;
+        b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &b);
+
+        const int nw = mw > 1 ? mw / 2 : 1;
+        const int nh = mh > 1 ? mh / 2 : 1;
+        VkImageBlit blit{};
+        blit.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, i - 1, 0, 1 };
+        blit.srcOffsets[1] = { mw, mh, 1 };
+        blit.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1 };
+        blit.dstOffsets[1] = { nw, nh, 1 };
+        vkCmdBlitImage(cmd, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+
+        // level i-1 is final -> shader read
+        b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        b.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &b);
+
+        mw = nw;
+        mh = nh;
+    }
+
+    // last level is still TRANSFER_DST
+    b.subresourceRange.baseMipLevel = mips - 1;
+    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, nullptr, 0, nullptr, 1, &b);
+}
 } // namespace
 
 Renderer::Renderer(const Config &cfg)
@@ -247,6 +312,18 @@ bool Renderer::chooseFormat(VkSurfaceKHR surface, bool wantHdr, VkSurfaceFormatK
 
 bool Renderer::createSharedResources()
 {
+    // Mip generation needs linear blitting for each texture's format; without it we
+    // keep the old single-level path (blur stays as before rather than breaking).
+    auto canBlit = [this](VkFormat f) {
+        VkFormatProperties fp{};
+        vkGetPhysicalDeviceFormatProperties(m_phys, f, &fp);
+        return (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0
+            && (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT) != 0
+            && (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT) != 0;
+    };
+    m_texLinearBlit = canBlit(VK_FORMAT_R16G16B16A16_SFLOAT);
+    m_overlayLinearBlit = canBlit(VK_FORMAT_R8G8B8A8_UNORM);
+
     // Descriptor set layout: UBO (binding 0) + sampled texture (binding 1), frag stage.
     VkDescriptorSetLayoutBinding binds[2]{};
     binds[0].binding = 0;
@@ -292,7 +369,7 @@ bool Renderer::createSharedResources()
     si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    si.maxLod = 0.0f;
+    si.maxLod = VK_LOD_CLAMP_NONE; // mip chain drives the blur/bloom prefiltering
     si.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
     VKCHECK(vkCreateSampler(m_device, &si, nullptr, &m_sampler), "sampler");
     return true;
@@ -518,11 +595,16 @@ bool Renderer::uploadTexture(const HdrImage &img)
     ici.imageType = VK_IMAGE_TYPE_2D;
     ici.format = VK_FORMAT_R16G16B16A16_SFLOAT;
     ici.extent = { uint32_t(img.w), uint32_t(img.h), 1 };
-    ici.mipLevels = 1;
+    // Mip chain: the background blur samples the level matching its tap spacing, so a
+    // sparse tap grid stops aliasing and reads as a smooth blur. Needs linear blitting.
+    const uint32_t mips = m_texLinearBlit ? mipCount(img.w, img.h) : 1;
+    m_texMips = mips;
+    ici.mipLevels = mips;
     ici.arrayLayers = 1;
     ici.samples = VK_SAMPLE_COUNT_1_BIT;
     ici.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ici.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    ici.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+              | (mips > 1 ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0);
     ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     VKCHECK(vkCreateImage(m_device, &ici, nullptr, &m_texImage), "texture image");
@@ -552,7 +634,7 @@ bool Renderer::uploadTexture(const HdrImage &img)
     toDst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     toDst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     toDst.image = m_texImage;
-    toDst.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    toDst.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, mips, 0, 1 };
     toDst.srcAccessMask = 0;
     toDst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -563,13 +645,17 @@ bool Renderer::uploadTexture(const HdrImage &img)
     region.imageExtent = { uint32_t(img.w), uint32_t(img.h), 1 };
     vkCmdCopyBufferToImage(cmd, staging, m_texImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-    VkImageMemoryBarrier toShader = toDst;
-    toShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    toShader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    toShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    toShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        0, 0, nullptr, 0, nullptr, 1, &toShader);
+    if (mips > 1) {
+        generateMipmaps(cmd, m_texImage, img.w, img.h, mips); // leaves all levels shader-read
+    } else {
+        VkImageMemoryBarrier toShader = toDst;
+        toShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toShader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        toShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        toShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &toShader);
+    }
 
     vkEndCommandBuffer(cmd);
     VkSubmitInfo si{};
@@ -587,7 +673,7 @@ bool Renderer::uploadTexture(const HdrImage &img)
     vci.image = m_texImage;
     vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vci.format = VK_FORMAT_R16G16B16A16_SFLOAT;
-    vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, mips, 0, 1 };
     VKCHECK(vkCreateImageView(m_device, &vci, nullptr, &m_texView), "texture view");
     return true;
 }
@@ -604,11 +690,15 @@ bool Renderer::uploadOverlay(const uint8_t *rgba, int w, int h)
         ici.imageType = VK_IMAGE_TYPE_2D;
         ici.format = VK_FORMAT_R8G8B8A8_UNORM;
         ici.extent = { uint32_t(w), uint32_t(h), 1 };
-        ici.mipLevels = 1;
+        // Mip chain: the text bloom samples the level matching its tap spacing, so the
+        // glow is smooth instead of a coarse 7x7 tap grid stepping around the glyphs.
+        m_overlayMips = m_overlayLinearBlit ? mipCount(w, h) : 1;
+        ici.mipLevels = m_overlayMips;
         ici.arrayLayers = 1;
         ici.samples = VK_SAMPLE_COUNT_1_BIT;
         ici.tiling = VK_IMAGE_TILING_OPTIMAL;
-        ici.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        ici.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+                  | (m_overlayMips > 1 ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0);
         ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         VKCHECK(vkCreateImage(m_device, &ici, nullptr, &m_overlayTex), "overlay image");
@@ -626,7 +716,7 @@ bool Renderer::uploadOverlay(const uint8_t *rgba, int w, int h)
         vci.image = m_overlayTex;
         vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
         vci.format = VK_FORMAT_R8G8B8A8_UNORM;
-        vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, m_overlayMips, 0, 1 };
         VKCHECK(vkCreateImageView(m_device, &vci, nullptr, &m_overlayView), "overlay view");
         m_overlayW = w;
         m_overlayH = h;
@@ -680,7 +770,7 @@ bool Renderer::uploadOverlay(const uint8_t *rgba, int w, int h)
     toDst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     toDst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     toDst.image = m_overlayTex;
-    toDst.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    toDst.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, m_overlayMips, 0, 1 };
     toDst.srcAccessMask = 0;
     toDst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -691,13 +781,17 @@ bool Renderer::uploadOverlay(const uint8_t *rgba, int w, int h)
     region.imageExtent = { uint32_t(w), uint32_t(h), 1 };
     vkCmdCopyBufferToImage(cmd, staging, m_overlayTex, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-    VkImageMemoryBarrier toShader = toDst;
-    toShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    toShader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    toShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    toShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        0, 0, nullptr, 0, nullptr, 1, &toShader);
+    if (m_overlayMips > 1) {
+        generateMipmaps(cmd, m_overlayTex, w, h, m_overlayMips); // leaves all levels shader-read
+    } else {
+        VkImageMemoryBarrier toShader = toDst;
+        toShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toShader.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        toShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        toShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &toShader);
+    }
 
     vkEndCommandBuffer(cmd);
     VkSubmitInfo si{};
