@@ -449,6 +449,19 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
     if (ctx->w == 0 || ctx->h == 0)
         return;                       // no size agreed yet; wait for the next configure
 
+    // The overlay canvas is built once, but the thumbnail border depends on the OUTPUT
+    // aspect -- and the first configure is not always the final size (a preview window
+    // gets a transient size before it goes fullscreen). Re-render the overlay whenever
+    // the aspect actually changes, or the border keeps the stale geometry and no longer
+    // hugs the thumbnail.
+    if (m_deviceReady && ctx->h > 0) {
+        const double a = double(ctx->w) / double(ctx->h);
+        if (m_overlayOutAspect <= 0.0 || std::fabs(a - m_overlayOutAspect) > 0.001) {
+            m_overlayOutAspect = a;
+            refreshOverlay();
+        }
+    }
+
     // Lazily bring up the Vulkan device on the first configured output.
     if (!m_deviceReady) {
         if (!m_renderer->ensureDevice(ctx->render.surface, m_image)) {
@@ -461,10 +474,10 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
         // (the 1920x1080 reference is upscaled otherwise -> blurry on 4K). The scale
         // is fixed here and reused on every refresh so the texture size stays stable.
         m_overlayScale = ctx->h > 0 ? double(ctx->h) / 1080.0 : 1.0;
-        m_overlayOutW = double(ctx->w);
+        m_overlayOutAspect = ctx->h > 0 ? double(ctx->w) / double(ctx->h) : 0.0;
         m_overlayAspect = (m_image.w > 1 && m_image.h > 1) ? double(m_image.w) / double(m_image.h) : 0.0;
         const overlay::TextImage ov = overlay::renderOverlay(m_ostate, m_config, m_overlayScale,
-                                                             m_overlayOutW, m_overlayAspect);
+                                                             m_overlayOutAspect, m_overlayAspect);
         if (ov.valid())
             m_renderer->uploadOverlay(ov.rgba.data(), ov.w, ov.h);
         m_deviceReady = true;
@@ -514,7 +527,7 @@ void SessionLock::refreshOverlay()
     if (!m_deviceReady)
         return;
     const overlay::TextImage ov = overlay::renderOverlay(m_ostate, m_config, m_overlayScale,
-                                                         m_overlayOutW, m_overlayAspect);
+                                                         m_overlayOutAspect, m_overlayAspect);
     if (ov.valid())
         m_renderer->uploadOverlay(ov.rgba.data(), ov.w, ov.h);
     // Re-render directly (NOT via frame callbacks): on Wayland, requestUpdate from

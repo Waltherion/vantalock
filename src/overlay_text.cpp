@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "overlay_text.h"
 
 #include "config.h"
@@ -84,7 +85,7 @@ Theme loadTheme()
 }
 
 TextImage renderOverlay(const State &state, const Config &cfg, double scale,
-                        double outputW, double imageAspect)
+                        double outputAspect, double imageAspect)
 {
     const int W = int(kW * scale + 0.5);
     const int H = int(kH * scale + 0.5);
@@ -201,8 +202,12 @@ TextImage renderOverlay(const State &state, const Config &cfg, double scale,
     // compute the same rect here (any aspect) and convert x into the 16:9 panel so it lands on the
     // thumbnail edge regardless of screen format (y maps 1:1, panel H == output H). White when
     // rainbow is on (the overlay shader colours it with the band); otherwise the accent colour.
-    if (cfg.thumbShow && cfg.thumbBorder > 0.0f && imageAspect > 0.0 && outputW > 0.0) {
-        const double oh = H, ow = outputW;
+    if (cfg.thumbShow && cfg.thumbBorder > 0.0f && imageAspect > 0.0 && outputAspect > 0.0) {
+        // Work in a virtual output that has the REAL output's aspect. Only the ratio
+        // ow/oh matters here (it converts the thumbnail's output-space width into panel
+        // space), and taking it from the live aspect keeps the border glued to the
+        // thumbnail even if the panel was sized from a different/earlier surface size.
+        const double oh = H, ow = H * outputAspect;
         double thh = cfg.thumbHeight * oh;
         double thw = thh * imageAspect;
         if (thw > 0.85 * ow) { thw = 0.85 * ow; thh = thw / imageAspect; }
