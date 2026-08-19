@@ -292,15 +292,28 @@ void SessionLock::onKeymap(int32_t fd, uint32_t size)
     }
     if (!m_xkb)
         m_xkb = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-    if (m_keymap)
-        xkb_keymap_unref(m_keymap);
-    if (m_xkbState)
-        xkb_state_unref(m_xkbState);
-    m_keymap = xkb_keymap_new_from_string(m_xkb, map, XKB_KEYMAP_FORMAT_TEXT_V1,
-                                          XKB_KEYMAP_COMPILE_NO_FLAGS);
-    m_xkbState = m_keymap ? xkb_state_new(m_keymap) : nullptr;
+
+    // Build the new keymap FIRST and only swap it in once it is usable. Tearing the
+    // old state down first meant a keymap that failed to compile left m_xkbState null,
+    // and onKey() drops every key when that is null -- an unrecoverable lock-out with
+    // no way to type the password. Keeping the previous keymap is always better.
+    xkb_keymap *km = xkb_keymap_new_from_string(m_xkb, map, XKB_KEYMAP_FORMAT_TEXT_V1,
+                                                XKB_KEYMAP_COMPILE_NO_FLAGS);
+    xkb_state *st = km ? xkb_state_new(km) : nullptr;
     munmap(map, size);
     ::close(fd);
+    if (!km || !st) {
+        std::fprintf(stderr, "vantalock: keymap compile failed; keeping the previous one\n");
+        if (st) xkb_state_unref(st);
+        if (km) xkb_keymap_unref(km);
+        return;
+    }
+    if (m_xkbState)
+        xkb_state_unref(m_xkbState);
+    if (m_keymap)
+        xkb_keymap_unref(m_keymap);
+    m_keymap = km;
+    m_xkbState = st;
 }
 
 void SessionLock::onModifiers(uint32_t depressed, uint32_t latched, uint32_t locked, uint32_t group)

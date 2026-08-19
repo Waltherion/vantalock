@@ -1034,11 +1034,43 @@ void Renderer::renderOutput(Output &out)
 {
     if (!out.ready)
         return;
-    vkWaitForFences(m_device, 1, &out.inFlight, VK_TRUE, UINT64_MAX);
+
+    // NEVER block the event loop here. Both of these used to wait UINT64_MAX, and a
+    // compositor that stops releasing swapchain images -- which is exactly what happens
+    // while the output is DPMS-off or the surface is occluded -- would park render()
+    // forever. The Wayland loop then never gets back to poll(), so no key events are
+    // dispatched: the cursor still moves (the compositor draws it) but the password
+    // cannot be typed, and the only way out is a hard power-off. For a LOCK SCREEN that
+    // is the worst possible failure, so a frame is always droppable: on timeout we just
+    // return and the loop keeps handling input, retrying on the next iteration.
+    constexpr uint64_t kFrameTimeoutNs = 100ull * 1000ull * 1000ull; // 100 ms
+
+    // Log the edges of a stall only (not every dropped frame): if this lock-out ever
+    // recurs, the journal shows whether frames were being dropped at the time.
+    auto markStall = [&out](const char *why) {
+        if (!out.stalled) {
+            out.stalled = true;
+            std::fprintf(stderr, "vantalock: dropping frames (%s) -- input stays responsive\n", why);
+        }
+    };
+
+    VkResult fw = vkWaitForFences(m_device, 1, &out.inFlight, VK_TRUE, kFrameTimeoutNs);
+    if (fw != VK_SUCCESS) {
+        markStall("previous frame still in flight");
+        return; // skip, stay responsive
+    }
 
     uint32_t idx = 0;
-    VkResult acq = vkAcquireNextImageKHR(m_device, out.swapchain, UINT64_MAX,
+    VkResult acq = vkAcquireNextImageKHR(m_device, out.swapchain, kFrameTimeoutNs,
         out.acquireSem, VK_NULL_HANDLE, &idx);
+    if (acq == VK_TIMEOUT || acq == VK_NOT_READY) {
+        markStall("no swapchain image free");
+        return; // screen off / occluded; the semaphore is untouched
+    }
+    if (out.stalled) {
+        out.stalled = false;
+        std::fprintf(stderr, "vantalock: rendering resumed\n");
+    }
     if (acq == VK_ERROR_OUT_OF_DATE_KHR) {
         std::fprintf(stderr, "vantalock: swapchain out of date on acquire\n");
         return; // Fase 0: skip; recreate handled on next configure

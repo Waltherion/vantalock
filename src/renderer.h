@@ -29,6 +29,7 @@ public:
         VkDeviceMemory uboMem = VK_NULL_HANDLE;
         void *uboMapped = nullptr;
         VkDescriptorSet descriptor = VK_NULL_HANDLE;
+        bool stalled = false; // frames are being dropped (compositor not releasing images)
         // Second UBO + descriptor for the sharp thumbnail (same texture, blur=0).
         VkBuffer thumbUbo = VK_NULL_HANDLE;
         VkDeviceMemory thumbUboMem = VK_NULL_HANDLE;
