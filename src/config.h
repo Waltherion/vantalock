@@ -43,6 +43,15 @@ struct Config {
     int fieldH = 35;      // px
     float fieldY = 0.68f; // field TOP as fraction of canvas height
     float fieldRadius = 0.0f; // corner rounding as fraction of field height (0 = sharp, 0.5 = pill)
+    // What stands in for each typed character. Empty = the classic drawn circle (crispest
+    // at any size); otherwise any character(s), e.g. a heart, star or asterisk. Needs a font
+    // that has the glyph -- Qt substitutes one automatically if the chosen family lacks it.
+    std::string fieldSymbol;
+    int fieldSymbolSize = 0;     // reference px; 0 = auto (scales with the field height)
+    std::string fieldSymbolFont; // empty = the main family. Set it when that family has no
+                                 // such glyph (many display fonts do not) -- otherwise the
+                                 // system substitutes one, which may even be a colour emoji
+                                 // font that ignores the accent/rainbow colour entirely.
 
     // Colours (resolved from the theme, overridable in the JSONC)
     overlay::Color text;

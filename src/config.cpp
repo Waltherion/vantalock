@@ -61,7 +61,11 @@ const char *kDefaultConfig = R"JSONC(// VantaLock configuration (JSONC: // and /
     "width": 200,
     "height": 35,
     "y": 0.68,      // field TOP as a fraction of screen height
-    "radius": 0     // corner rounding as a fraction of field height (0 = sharp, 0.5 = pill)
+    "radius": 0,    // corner rounding as a fraction of field height (0 = sharp, 0.5 = pill)
+    "symbol": "",   // what hides each typed character: "" = classic dot, or any glyph e.g. "*"
+    "symbolSize": 0, // reference px for that glyph; 0 = auto (scales with the field height)
+    "symbolFont": "" // font for the glyph; "" = the main family. Set this if that family has
+                     // no such character (many display fonts lack hearts/stars)
   },
   // ---- Colours: empty string = inherit the active theme's colour ----
   "colors": {
@@ -230,6 +234,9 @@ Config Config::load()
     cfg.fieldH = fl.value("height").toInt(cfg.fieldH);
     cfg.fieldY = float(fl.value("y").toDouble(cfg.fieldY));
     cfg.fieldRadius = float(fl.value("radius").toDouble(cfg.fieldRadius));
+    cfg.fieldSymbol = fl.value("symbol").toString().toStdString();
+    cfg.fieldSymbolSize = fl.value("symbolSize").toInt(cfg.fieldSymbolSize);
+    cfg.fieldSymbolFont = fl.value("symbolFont").toString().toStdString();
 
     const QJsonObject co = section("colors");
     overlay::Color c;

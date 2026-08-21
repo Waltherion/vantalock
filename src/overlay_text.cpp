@@ -3,6 +3,7 @@
 
 #include "config.h"
 
+#include <QFontMetrics>
 #include <QBrush>
 #include <QColor>
 #include <QDateTime>
@@ -176,6 +177,36 @@ TextImage renderOverlay(const State &state, const Config &cfg, double scale,
         dim.setAlpha(170);
         drawCentred(QStringLiteral("Enter password"), font(cfg.fieldFontSize, QFont::Normal),
                     int(field.center().y()), dim);
+    } else if (!cfg.fieldSymbol.empty()) {
+        // A glyph per typed character (hearts, stars, asterisks...) instead of the drawn
+        // dots. Rainbow works the same way it does for the clock: draw it white and let the
+        // shader multiply the band in.
+        const QString sym = QString::fromStdString(cfg.fieldSymbol);
+        const int px = cfg.fieldSymbolSize > 0 ? cfg.fieldSymbolSize
+                                               : int(cfg.fieldH * 0.5 + 0.5);
+        QFont f = font(px, QFont::Normal);
+        if (!cfg.fieldSymbolFont.empty())
+            f.setFamily(QString::fromStdString(cfg.fieldSymbolFont));
+        const QFontMetrics fm(f);
+        const int shown = state.passwordLen < 16 ? state.passwordLen : 16;
+        // Space by the glyph's own advance so wide symbols cannot overlap, but never
+        // tighter than the dot spacing.
+        const double adv = fm.horizontalAdvance(sym);
+        const double gap = std::max(double(fieldH) * 0.34, adv * 1.12);
+        const QRect br = fm.boundingRect(sym);
+        const double totalW = (shown - 1) * gap;
+        double x = field.center().x() - totalW / 2.0 - br.center().x();
+        const double y = field.center().y() - br.center().y();
+        p.setFont(f);
+        p.setBrush(Qt::NoBrush);
+        for (int i = 0; i < shown; ++i) {
+            const int sh = qMax(0, int(cfg.shadowOffset * scale + 0.5));
+            p.setPen(shadow);
+            p.drawText(QPointF(x + sh, y + sh), sym);
+            p.setPen(rainbowOn ? rainbowMask : accent);
+            p.drawText(QPointF(x, y), sym);
+            x += gap;
+        }
     } else {
         // Row of dots, capped so a long password stays inside the pill.
         const int shown = state.passwordLen < 16 ? state.passwordLen : 16;
