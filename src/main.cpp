@@ -18,6 +18,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <fcntl.h>
+#include <sys/file.h>
 #include <cstring>
 
 int main(int argc, char **argv)
@@ -117,6 +119,23 @@ int main(int argc, char **argv)
     } else {
         std::fprintf(stderr, "vantalock: %dx%d, hdr=%d, kind=%s, primaries=%s\n",
             img.w, img.h, int(img.hdr), hdrKindName(img.kind), primariesName(img.primaries));
+    }
+
+    // Single instance: hold an flock for the whole run. A second lock screen can never
+    // get the session lock anyway (the compositor grants it to one client), so it would
+    // just sit there rendering -- which is exactly how two orphans once burned a GPU for
+    // hours. The kernel drops the lock automatically when this process dies, so a crash
+    // cannot leave a stale guard behind. Preview windows are exempt: they lock nothing.
+    if (!preview) {
+        const QByteArray rt = qgetenv("XDG_RUNTIME_DIR");
+        const QString lockPath = (rt.isEmpty() ? QStringLiteral("/tmp") : QString::fromLocal8Bit(rt))
+                                 + QStringLiteral("/vantalock.lock");
+        const int lockFd = ::open(qPrintable(lockPath), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+        if (lockFd >= 0 && ::flock(lockFd, LOCK_EX | LOCK_NB) != 0) {
+            std::fprintf(stderr, "vantalock: another instance already holds the lock; exiting\n");
+            return 0;   // not an error: the session is already covered
+        }
+        // lockFd stays open on purpose -- closing it would release the guard.
     }
 
     const Config cfg = Config::load();

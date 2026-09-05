@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cerrno>
 #include <cstring>
 #include <ctime>
 #include <poll.h>
@@ -227,6 +228,10 @@ void SessionLock::onGlobalRemove(uint32_t name)
 void SessionLock::onLocked()
 {
     m_locked = true;
+    // Start the fade HERE, not at the first surface configure: animation only runs once
+    // locked, so a lock that took longer than the fade duration would otherwise arrive
+    // with the fade already "expired" and snap in without easing.
+    m_fadeStart = nowSec();
     std::fprintf(stderr, "vantalock: session locked\n");
 }
 
@@ -624,6 +629,17 @@ bool SessionLock::run()
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC, &start);
 
+    // Give up if the compositor never grants the lock. A lock request can go unanswered
+    // (session being torn down, another lock client already holding it): the surfaces exist
+    // and get configured, but `locked` never arrives. Two such orphans once sat rendering
+    // the animation at ~30fps on both outputs for five hours -- 436 W, fans up, session NOT
+    // locked. Lingering protects nothing, so bail out loudly instead. 0 disables the bound.
+    long lockDeadlineMs = 10000;
+    if (const char *t = std::getenv("VANTALOCK_LOCK_TIMEOUT")) {
+        const long secs = std::atol(t);
+        lockDeadlineMs = secs > 0 ? secs * 1000 : -1;
+    }
+
     // Rainbow scroll: only when enabled with a non-zero speed do we render continuously
     // (~30fps). Otherwise the loop stays event-driven (minute tick / keypress) at ~zero cost.
     const bool rainbowAnim = m_config.rainbow && m_config.rainbowStops.size() >= 2
@@ -639,9 +655,22 @@ bool SessionLock::run()
     const int fd = wl_display_get_fd(m_display);
     while (m_running && !m_finished) {
         // Prepare-read pattern so we can poll with a timeout for the safety net.
-        while (wl_display_prepare_read(m_display) != 0)
-            wl_display_dispatch_pending(m_display);
-        wl_display_flush(m_display);
+        // dispatch_pending's return MUST be checked: on a broken connection it fails
+        // immediately without consuming anything, so prepare_read keeps failing and this
+        // becomes a tight spin that never reaches poll() -- and never exits either.
+        bool linkDead = false;
+        while (wl_display_prepare_read(m_display) != 0) {
+            if (wl_display_dispatch_pending(m_display) < 0) { linkDead = true; break; }
+        }
+        if (linkDead) {
+            std::fprintf(stderr, "vantalock: Wayland connection lost -> exiting\n");
+            break;
+        }
+        if (wl_display_flush(m_display) < 0 && errno != EAGAIN) {
+            wl_display_cancel_read(m_display);
+            std::fprintf(stderr, "vantalock: Wayland flush failed -> exiting\n");
+            break;
+        }
 
         int pollTimeout = 1000; // wake periodically to check the safety deadline
         if (timeoutMs >= 0) {
@@ -660,9 +689,28 @@ bool SessionLock::run()
             if (remain < pollTimeout)
                 pollTimeout = int(remain);
         }
+        if (!m_preview && !m_locked && lockDeadlineMs > 0) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            const long since = (now.tv_sec - start.tv_sec) * 1000
+                + (now.tv_nsec - start.tv_nsec) / 1000000;
+            if (since >= lockDeadlineMs) {
+                wl_display_cancel_read(m_display);
+                std::fprintf(stderr,
+                    "vantalock: compositor never granted the lock after %ld ms -> exiting\n",
+                    lockDeadlineMs);
+                m_running = false;
+                break;
+            }
+        }
+
         // Render continuously while anything animates: the rainbow band (~30fps) or a
-        // fade-in / shake (~60fps for smoothness).
-        const bool maybeAnim = rainbowAnim || m_fadeStart >= 0.0 || m_shakeStart >= 0.0;
+        // fade-in / shake (~60fps for smoothness). ONLY once the session is actually
+        // locked: before that the protocol just needs the one committed frame per surface
+        // (done from onSurfaceConfigure), and animating a lock that may never be granted is
+        // what burned a GPU flat out for hours.
+        const bool animOk = m_preview || m_locked;
+        const bool maybeAnim = animOk && (rainbowAnim || m_fadeStart >= 0.0 || m_shakeStart >= 0.0);
         const int animCap = (m_fadeStart >= 0.0 || m_shakeStart >= 0.0) ? 16 : 33;
         if (maybeAnim && pollTimeout > animCap)
             pollTimeout = animCap;
@@ -728,7 +776,7 @@ bool SessionLock::run()
         m_renderer->setSceneFade(ovAlpha);
         m_renderer->setOverlayOffsetX(ovOffsetX);
 
-        if (rainbowAnim || fadeActive || shakeActive) {
+        if (animOk && (rainbowAnim || fadeActive || shakeActive)) {
             if (rainbowAnim) {
                 const double elapsed = tnow - (double(start.tv_sec) + double(start.tv_nsec) / 1e9);
                 m_renderer->setRainbowPhase(float(m_config.rainbowSpeed * elapsed));
