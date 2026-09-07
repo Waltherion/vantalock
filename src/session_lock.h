@@ -1,8 +1,14 @@
 #pragma once
 
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "auth.h"
@@ -77,8 +83,8 @@ public:
         xdg_surface *xdgSurface = nullptr;   // preview only
         xdg_toplevel *xdgToplevel = nullptr; // preview only
         std::unique_ptr<cm::SurfaceColor> color;
-        Renderer::Output render;
-        bool configured = false;
+        Renderer::Output render;          // touched ONLY by the render thread after setup
+        std::atomic<bool> configured{false};
         uint32_t w = 0, h = 0;
     };
     void onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w, uint32_t h);
@@ -128,6 +134,30 @@ private:
 
     std::unique_ptr<Renderer> m_renderer;
     std::vector<std::unique_ptr<OutputCtx>> m_outputs;
+
+    // ---- Render thread ------------------------------------------------------------
+    // ALL Vulkan work runs on one worker thread; the main thread (Wayland dispatch,
+    // keyboard, PAM, unlock) never waits on the GPU. A wedged driver / DPMS-off present
+    // then freezes only the picture -- never the password field or the unlock request.
+    // Lifecycle work (device/output creation, resize, destroy) is a FIFO of jobs; frames
+    // are a single coalesced request carrying the latest overlay/fade/offset/phase, so a
+    // stalled worker can never build a backlog.
+    void startRenderThread();
+    void renderThreadMain();
+    void postJob(std::function<void()> job);
+    void requestFrame();
+    bool shutdownRender(int timeoutMs);      // false = worker never returned (caller _exits)
+    std::thread m_rthread;
+    std::mutex m_rmx;
+    std::condition_variable m_rcv;
+    std::deque<std::function<void()>> m_rjobs;
+    bool m_rstop = false, m_rdone = false, m_frameReq = false;
+    float m_rFade = 1.0f, m_rOffset = 0.0f, m_rPhase = 0.0f;
+    std::vector<uint8_t> m_ovBuf; int m_ovW = 0, m_ovH = 0; bool m_ovDirty = false;
+    std::vector<OutputCtx *> m_rOutputs;     // outputs the worker may render (under m_rmx)
+    std::vector<std::unique_ptr<OutputCtx>> m_graveyard; // removed outputs kept alive for the worker
+    std::atomic<bool> m_rDeviceFailed{false};
+    bool m_deviceRequested = false;          // ensureDevice job posted (main-thread view)
 
     bool m_locked = false;
     bool m_finished = false;

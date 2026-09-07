@@ -7,6 +7,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -726,8 +727,15 @@ bool Renderer::uploadOverlay(const uint8_t *rgba, int w, int h)
         return false;
     }
 
-    // Refresh: idle the device (renders are infrequent), then stage + copy.
-    vkDeviceWaitIdle(m_device);
+    // Refresh: wait (BOUNDED) for the frames that may still sample the overlay, then
+    // stage + copy. This used to be vkDeviceWaitIdle: with a present stuck behind a
+    // DPMS-off output / a wedged driver that never returned, and it sat on the keypress
+    // path -- the lock screen froze with the cursor still moving. Dropping one overlay
+    // update is invisible; a frozen password field is not.
+    if (!waitPendingFrames(200ull * 1000ull * 1000ull)) {
+        std::fprintf(stderr, "vantalock: overlay upload skipped (GPU still busy after 200 ms)\n");
+        return false;
+    }
     const VkDeviceSize bytes = VkDeviceSize(w) * h * 4;
     VkBuffer staging = VK_NULL_HANDLE;
     VkDeviceMemory stagingMem = VK_NULL_HANDLE;
@@ -798,8 +806,18 @@ bool Renderer::uploadOverlay(const uint8_t *rgba, int w, int h)
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cmd;
-    vkQueueSubmit(m_queue, 1, &si, VK_NULL_HANDLE);
-    vkQueueWaitIdle(m_queue);
+    VkFence upFence = VK_NULL_HANDLE;
+    VkFenceCreateInfo fci{};
+    fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    vkCreateFence(m_device, &fci, nullptr, &upFence);
+    vkQueueSubmit(m_queue, 1, &si, upFence);
+    // Bounded: on timeout the staging buffer + cmd are deliberately leaked (the GPU may
+    // still read them) rather than freed under it or waited on forever.
+    if (vkWaitForFences(m_device, 1, &upFence, VK_TRUE, 500ull * 1000ull * 1000ull) != VK_SUCCESS) {
+        std::fprintf(stderr, "vantalock: overlay upload did not complete in 500 ms (leaking staging)\n");
+        return false;
+    }
+    vkDestroyFence(m_device, upFence, nullptr);
     vkFreeCommandBuffers(m_device, m_cmdPool, 1, &cmd);
     vkDestroyBuffer(m_device, staging, nullptr);
     vkFreeMemory(m_device, stagingMem, nullptr);
@@ -947,7 +965,19 @@ bool Renderer::createOutput(Output &out, VkSurfaceKHR surface, uint32_t w, uint3
     sci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     sci.preTransform = caps.currentTransform;
     sci.compositeAlpha = alpha;
-    sci.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    // MAILBOX when the surface offers it: FIFO presents block until a vblank the output
+    // will never produce while DPMS-off, and on NVIDIA that wait sat inside the render
+    // path. Mailbox just replaces the pending image. FIFO remains the guaranteed fallback.
+    {
+        uint32_t pmCount = 0;
+        vkGetPhysicalDeviceSurfacePresentModesKHR(m_phys, surface, &pmCount, nullptr);
+        std::vector<VkPresentModeKHR> pms(pmCount);
+        if (pmCount) vkGetPhysicalDeviceSurfacePresentModesKHR(m_phys, surface, &pmCount, pms.data());
+        sci.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+        for (auto pm : pms) if (pm == VK_PRESENT_MODE_MAILBOX_KHR) sci.presentMode = pm;
+        std::fprintf(stderr, "vantalock: present mode = %s\n",
+                     sci.presentMode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : "fifo");
+    }
     sci.clipped = VK_TRUE;
     VKCHECK(vkCreateSwapchainKHR(m_device, &sci, nullptr, &out.swapchain), "swapchain");
 
@@ -1221,6 +1251,8 @@ void Renderer::renderOutput(Output &out)
     si.signalSemaphoreCount = 1;
     si.pSignalSemaphores = &out.renderSem;
     vkQueueSubmit(m_queue, 1, &si, out.inFlight);
+    if (std::find(m_pendingFences.begin(), m_pendingFences.end(), out.inFlight) == m_pendingFences.end())
+        m_pendingFences.push_back(out.inFlight);
 
     VkPresentInfoKHR pi{};
     pi.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -1232,11 +1264,35 @@ void Renderer::renderOutput(Output &out)
     vkQueuePresentKHR(m_queue, &pi);
 }
 
+bool Renderer::waitPendingFrames(uint64_t timeoutNs)
+{
+    if (m_pendingFences.empty())
+        return true;
+    // Fences that were destroyed (destroyOutput) are removed there, so this list only
+    // holds live handles. Unsignaled-because-never-submitted fences cannot occur: the
+    // fence is only listed right after its vkQueueSubmit.
+    const VkResult r = vkWaitForFences(m_device, uint32_t(m_pendingFences.size()),
+                                       m_pendingFences.data(), VK_TRUE, timeoutNs);
+    return r == VK_SUCCESS;
+}
+
 void Renderer::destroyOutput(Output &out)
 {
     if (!m_device)
         return;
-    vkDeviceWaitIdle(m_device);
+    // Bounded: if this output's last frame never retires (driver wedged, output gone),
+    // leak its Vulkan objects instead of hanging in vkDeviceWaitIdle. This runs on
+    // resize/removal and at exit -- neither may block the lock screen.
+    if (out.inFlight
+        && vkWaitForFences(m_device, 1, &out.inFlight, VK_TRUE, 500ull * 1000ull * 1000ull) != VK_SUCCESS) {
+        std::fprintf(stderr, "vantalock: output still busy after 500 ms; leaking its resources\n");
+        m_pendingFences.erase(std::remove(m_pendingFences.begin(), m_pendingFences.end(), out.inFlight),
+                              m_pendingFences.end());
+        out = Output{};
+        return;
+    }
+    m_pendingFences.erase(std::remove(m_pendingFences.begin(), m_pendingFences.end(), out.inFlight),
+                          m_pendingFences.end());
     if (out.inFlight) vkDestroyFence(m_device, out.inFlight, nullptr);
     if (out.acquireSem) vkDestroySemaphore(m_device, out.acquireSem, nullptr);
     if (out.renderSem) vkDestroySemaphore(m_device, out.renderSem, nullptr);

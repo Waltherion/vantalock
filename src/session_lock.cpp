@@ -16,6 +16,8 @@
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-names.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -212,13 +214,21 @@ void SessionLock::onGlobalRemove(uint32_t name)
     // Output unplugged: drop its lock surface (Fase 0 keeps this minimal).
     for (auto it = m_outputs.begin(); it != m_outputs.end(); ++it) {
         if ((*it)->globalName == name) {
-            (*it)->color.reset();
-            if (m_renderer)
-                m_renderer->destroyOutput((*it)->render);
-            if ((*it)->lockSurface)
-                ext_session_lock_surface_v1_destroy((*it)->lockSurface);
-            if ((*it)->surface)
-                wl_surface_destroy((*it)->surface);
+            OutputCtx *ctx = it->get();
+            ctx->color.reset();
+            {
+                std::lock_guard<std::mutex> g(m_rmx);
+                m_rOutputs.erase(std::remove(m_rOutputs.begin(), m_rOutputs.end(), ctx), m_rOutputs.end());
+            }
+            // The worker owns ctx->render; it also drops the proxies once the GPU side is
+            // gone, so the surface is never destroyed under an in-flight present.
+            postJob([this, ctx] {
+                if (m_renderer) m_renderer->destroyOutput(ctx->render);
+                if (ctx->lockSurface) ext_session_lock_surface_v1_destroy(ctx->lockSurface);
+                if (ctx->surface) wl_surface_destroy(ctx->surface);
+                ctx->lockSurface = nullptr; ctx->surface = nullptr;
+            });
+            m_graveyard.push_back(std::move(*it));
             m_outputs.erase(it);
             return;
         }
@@ -440,6 +450,8 @@ void SessionLock::setupOutput(OutputCtx *ctx)
 
     VkSurfaceKHR vks = m_renderer->createWaylandSurface(m_display, ctx->surface);
     ctx->render.surface = vks;
+    std::lock_guard<std::mutex> g(m_rmx);
+    m_rOutputs.push_back(ctx);
 }
 
 void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w, uint32_t h)
@@ -459,7 +471,7 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
     // gets a transient size before it goes fullscreen). Re-render the overlay whenever
     // the aspect actually changes, or the border keeps the stale geometry and no longer
     // hugs the thumbnail.
-    if (m_deviceReady && ctx->h > 0) {
+    if (m_deviceRequested && ctx->h > 0) {
         const double a = double(ctx->w) / double(ctx->h);
         if (m_overlayOutAspect <= 0.0 || std::fabs(a - m_overlayOutAspect) > 0.001) {
             m_overlayOutAspect = a;
@@ -467,34 +479,35 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
         }
     }
 
-    // Lazily bring up the Vulkan device on the first configured output.
-    if (!m_deviceReady) {
-        if (!m_renderer->ensureDevice(ctx->render.surface, m_image)) {
-            std::fprintf(stderr, "vantalock: device init failed\n");
-            m_running = false;
-            return;
-        }
-        // Upload the overlay (clock + password field) before any output binds it.
+    // Lazily bring up the Vulkan device on the first configured output -- on the worker.
+    // The main thread only rasterises the overlay (CPU) and posts the job.
+    if (!m_deviceRequested) {
+        m_deviceRequested = true;
+        m_deviceReady = true; // main-thread gate for refreshOverlay(); the worker orders the rest
         // Render the canvas at this output's native resolution so the text is sharp
         // (the 1920x1080 reference is upscaled otherwise -> blurry on 4K). The scale
         // is fixed here and reused on every refresh so the texture size stays stable.
         m_overlayScale = ctx->h > 0 ? double(ctx->h) / 1080.0 : 1.0;
         m_overlayOutAspect = ctx->h > 0 ? double(ctx->w) / double(ctx->h) : 0.0;
         m_overlayAspect = (m_image.w > 1 && m_image.h > 1) ? double(m_image.w) / double(m_image.h) : 0.0;
-        const overlay::TextImage ov = overlay::renderOverlay(m_ostate, m_config, m_overlayScale,
-                                                             m_overlayOutAspect, m_overlayAspect);
-        if (ov.valid())
-            m_renderer->uploadOverlay(ov.rgba.data(), ov.w, ov.h);
-        m_deviceReady = true;
+        overlay::TextImage ov = overlay::renderOverlay(m_ostate, m_config, m_overlayScale,
+                                                       m_overlayOutAspect, m_overlayAspect);
+        VkSurfaceKHR probe = ctx->render.surface;
+        postJob([this, probe, ov = std::move(ov)]() mutable {
+            if (!m_renderer->ensureDevice(probe, m_image)) {
+                std::fprintf(stderr, "vantalock: device init failed\n");
+                m_rDeviceFailed = true;
+                return;
+            }
+            // Upload the overlay before any output binds it (descriptors need the view).
+            if (ov.valid())
+                m_renderer->uploadOverlay(ov.rgba.data(), ov.w, ov.h);
+        });
     }
 
-    const bool wantHdr = monitorWantsHdr(ctx->name);
+    const bool wantHdr = monitorWantsHdr(ctx->name);   // hyprctl, bounded 2 s, main thread
 
     if (!ctx->configured) {
-        if (!m_renderer->createOutput(ctx->render, ctx->render.surface, ctx->w, ctx->h, m_image, wantHdr)) {
-            std::fprintf(stderr, "vantalock: createOutput failed\n");
-            return;
-        }
         // Tag the surface BEFORE the first commit (present) so true black holds.
         // Default OFF: the Vulkan WSI already propagates the swapchain's colour
         // space, and a second image-description on the same wl_surface can be a
@@ -503,44 +516,132 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
         if (std::getenv("VANTALOCK_CM_TAG")) {
             ctx->color = std::make_unique<cm::SurfaceColor>(m_display, ctx->surface);
             if (ctx->color->valid()) {
-                if (ctx->render.hdr && ctx->color->supportsScrgb())
+                if (wantHdr && ctx->color->supportsScrgb())
                     ctx->color->setWindowsScrgb();
                 else
                     ctx->color->setSrgb();
             }
         }
-        ctx->configured = true;
-        // Start the fade-in from the very first presented frame (alpha 0), so the lock
-        // eases in rather than snapping. Once only; later outputs join the same fade.
-        if (m_fadeStart < 0.0) {
+        // Preview has no `locked` event: start its fade at the first configure.
+        if (m_preview && m_fadeStart < 0.0)
             m_fadeStart = nowSec();
-            m_renderer->setSceneFade(0.0f);
-        }
-        m_renderer->renderOutput(ctx->render);
+        { std::lock_guard<std::mutex> g(m_rmx); m_rFade = 0.0f; } // first frame black, then ease in
+        const uint32_t w = ctx->w, hgt = ctx->h;
+        postJob([this, ctx, w, hgt, wantHdr] {
+            if (!m_renderer->createOutput(ctx->render, ctx->render.surface, w, hgt, m_image, wantHdr)) {
+                std::fprintf(stderr, "vantalock: createOutput failed\n");
+                return;
+            }
+            ctx->configured = true;
+            m_renderer->renderOutput(ctx->render);   // the one frame the lock protocol needs
+        });
     } else if (ctx->render.extent.width != ctx->w || ctx->render.extent.height != ctx->h) {
-        // Resize: rebuild swapchain (keep the cm tag + surface).
-        m_renderer->destroyOutput(ctx->render);
-        ctx->render = Renderer::Output{};
-        ctx->render.surface = m_renderer->createWaylandSurface(m_display, ctx->surface);
-        m_renderer->createOutput(ctx->render, ctx->render.surface, ctx->w, ctx->h, m_image, wantHdr);
-        m_renderer->renderOutput(ctx->render);
+        // Resize: rebuild swapchain (keep the cm tag + surface) -- on the worker.
+        const uint32_t w = ctx->w, hgt = ctx->h;
+        postJob([this, ctx, w, hgt, wantHdr] {
+            m_renderer->destroyOutput(ctx->render);
+            ctx->render = Renderer::Output{};
+            ctx->render.surface = m_renderer->createWaylandSurface(m_display, ctx->surface);
+            if (m_renderer->createOutput(ctx->render, ctx->render.surface, w, hgt, m_image, wantHdr))
+                m_renderer->renderOutput(ctx->render);
+        });
     }
+}
+
+// ---- Render thread ------------------------------------------------------------------
+
+void SessionLock::startRenderThread()
+{
+    m_rthread = std::thread([this] { renderThreadMain(); });
+}
+
+void SessionLock::postJob(std::function<void()> job)
+{
+    { std::lock_guard<std::mutex> g(m_rmx); m_rjobs.push_back(std::move(job)); }
+    m_rcv.notify_one();
+}
+
+void SessionLock::requestFrame()
+{
+    { std::lock_guard<std::mutex> g(m_rmx); m_frameReq = true; }
+    m_rcv.notify_one();
+}
+
+void SessionLock::renderThreadMain()
+{
+    // VANTALOCK_TEST_STALL=<sec> (preview only): freeze this thread after N seconds to
+    // prove the main thread keeps taking input and can exit without it.
+    double stallAt = -1.0;
+    if (m_preview)
+        if (const char *t = std::getenv("VANTALOCK_TEST_STALL"))
+            if (std::atof(t) > 0.0) stallAt = nowSec() + std::atof(t);
+
+    for (;;) {
+        std::deque<std::function<void()>> jobs;
+        bool frame = false;
+        float fade = 1.0f, offset = 0.0f, phase = 0.0f;
+        std::vector<uint8_t> ov; int ovW = 0, ovH = 0;
+        std::vector<OutputCtx *> outs;
+        {
+            std::unique_lock<std::mutex> lk(m_rmx);
+            m_rcv.wait(lk, [this] { return m_rstop || !m_rjobs.empty() || m_frameReq; });
+            if (m_rstop) break;
+            jobs.swap(m_rjobs);
+            frame = m_frameReq; m_frameReq = false;
+            fade = m_rFade; offset = m_rOffset; phase = m_rPhase;
+            if (m_ovDirty) { ov.swap(m_ovBuf); ovW = m_ovW; ovH = m_ovH; m_ovDirty = false; }
+            outs = m_rOutputs;
+        }
+        if (stallAt > 0.0 && nowSec() >= stallAt) {
+            std::fprintf(stderr, "vantalock: TEST_STALL -> render thread frozen forever\n");
+            for (;;) std::this_thread::sleep_for(std::chrono::hours(1));
+        }
+        for (auto &j : jobs) j();               // lifecycle first: device before overlay before outputs
+        if (!ov.empty())
+            m_renderer->uploadOverlay(ov.data(), ovW, ovH);
+        if (frame || !ov.empty()) {
+            m_renderer->setSceneFade(fade);
+            m_renderer->setOverlayOffsetX(offset);
+            m_renderer->setRainbowPhase(phase);
+            for (OutputCtx *o : outs)
+                if (o->configured)
+                    m_renderer->renderOutput(o->render);
+        }
+    }
+    { std::lock_guard<std::mutex> g(m_rmx); m_rdone = true; }
+    m_rcv.notify_all();
+}
+
+bool SessionLock::shutdownRender(int timeoutMs)
+{
+    if (!m_rthread.joinable())
+        return true;
+    std::unique_lock<std::mutex> lk(m_rmx);
+    m_rstop = true;
+    m_rcv.notify_all();
+    const bool done = m_rcv.wait_for(lk, std::chrono::milliseconds(timeoutMs), [this] { return m_rdone; });
+    lk.unlock();
+    if (done) { m_rthread.join(); return true; }
+    m_rthread.detach();                          // wedged in the driver; never wait on it
+    return false;
 }
 
 void SessionLock::refreshOverlay()
 {
     if (!m_deviceReady)
         return;
-    const overlay::TextImage ov = overlay::renderOverlay(m_ostate, m_config, m_overlayScale,
-                                                         m_overlayOutAspect, m_overlayAspect);
-    if (ov.valid())
-        m_renderer->uploadOverlay(ov.rgba.data(), ov.w, ov.h);
-    // Re-render directly (NOT via frame callbacks): on Wayland, requestUpdate from
-    // a timer/async path may never paint. Each configured output redraws.
-    for (auto &o : m_outputs) {
-        if (o->configured)
-            m_renderer->renderOutput(o->render);
+    overlay::TextImage ov = overlay::renderOverlay(m_ostate, m_config, m_overlayScale,
+                                                   m_overlayOutAspect, m_overlayAspect);
+    if (!ov.valid())
+        return;
+    // Hand the pixels to the worker and return: a keypress must never wait on the GPU.
+    // Coalesced -- only the newest overlay survives if the worker is behind.
+    {
+        std::lock_guard<std::mutex> g(m_rmx);
+        m_ovBuf = std::move(ov.rgba); m_ovW = ov.w; m_ovH = ov.h; m_ovDirty = true;
+        m_frameReq = true;
     }
+    m_rcv.notify_one();
 }
 
 bool SessionLock::probe()
@@ -606,6 +707,7 @@ bool SessionLock::run()
         std::fprintf(stderr, "vantalock: Vulkan instance init failed\n");
         return false;
     }
+    startRenderThread();
 
     if (m_preview) {
         std::fprintf(stderr, "vantalock: PREVIEW mode - the session is NOT locked. Esc quits.\n");
@@ -734,6 +836,12 @@ bool SessionLock::run()
             break;
         }
 
+        if (m_rDeviceFailed) {
+            std::fprintf(stderr, "vantalock: render device unavailable -> exiting\n");
+            m_running = false;
+            break;
+        }
+
         // PAM result ready: unlock on success, show an error otherwise.
         if (pfds[1].revents & POLLIN)
             onAuthResult();
@@ -773,37 +881,46 @@ bool SessionLock::run()
                 m_shakeStart = -1.0; // done -> recentred
             }
         }
-        m_renderer->setSceneFade(ovAlpha);
-        m_renderer->setOverlayOffsetX(ovOffsetX);
-
-        if (animOk && (rainbowAnim || fadeActive || shakeActive)) {
+        {
+            std::lock_guard<std::mutex> g(m_rmx);
+            m_rFade = ovAlpha;
+            m_rOffset = ovOffsetX;
             if (rainbowAnim) {
                 const double elapsed = tnow - (double(start.tv_sec) + double(start.tv_nsec) / 1e9);
-                m_renderer->setRainbowPhase(float(m_config.rainbowSpeed * elapsed));
+                m_rPhase = float(m_config.rainbowSpeed * elapsed);
             }
-            for (auto &o : m_outputs)
-                if (o->configured)
-                    m_renderer->renderOutput(o->render);
+            if (animOk && (rainbowAnim || fadeActive || shakeActive))
+                m_frameReq = true;   // coalesced: a stalled worker never accumulates a backlog
         }
+        m_rcv.notify_one();
     }
 
-    if (m_preview)
-        return true; // nothing was ever locked; a clean window close is success
-
-    if (m_finished) {
+    bool result;
+    if (m_preview) {
+        result = true; // nothing was ever locked; a clean window close is success
+    } else if (m_finished) {
         // Compositor never granted (or revoked) the lock: destroy without unlocking.
         if (m_lock)
             ext_session_lock_v1_destroy(m_lock);
-        return false;
+        result = false;
+    } else {
+        // Clean unlock path -- BEFORE touching the worker: the session must open even if
+        // the GPU side is wedged.
+        if (m_lock) {
+            if (m_locked)
+                ext_session_lock_v1_unlock_and_destroy(m_lock);
+            else
+                ext_session_lock_v1_destroy(m_lock);
+            wl_display_roundtrip(m_display); // ensure the server processes the unlock
+        }
+        result = m_locked;
     }
-
-    // Clean unlock path.
-    if (m_lock) {
-        if (m_locked)
-            ext_session_lock_v1_unlock_and_destroy(m_lock);
-        else
-            ext_session_lock_v1_destroy(m_lock);
-        wl_display_roundtrip(m_display); // ensure the server processes the unlock
+    if (!shutdownRender(500)) {
+        // The worker never came back from the driver. The session is already unlocked;
+        // do not let a stuck vkQueuePresent keep this process (or its GPU) alive.
+        std::fprintf(stderr, "vantalock: render thread stuck; hard exit (clean=%d)\n", int(result));
+        std::fflush(stderr);
+        _exit(result ? 0 : 1);
     }
-    return m_locked;
+    return result;
 }

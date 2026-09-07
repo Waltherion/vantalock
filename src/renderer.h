@@ -103,6 +103,11 @@ public:
     // Acquire -> record -> submit -> present one frame for this output.
     void renderOutput(Output &out);
 
+    // Bounded wait on the fences of the last frame submitted per output (the GPU work
+    // that may still READ the overlay texture / swapchain images). Returns false on
+    // timeout so callers drop the operation instead of hanging the process.
+    bool waitPendingFrames(uint64_t timeoutNs);
+
     void destroyOutput(Output &out);
 
 private:
@@ -136,6 +141,7 @@ private:
     VkDescriptorSetLayout m_descLayout = VK_NULL_HANDLE;
     VkPipelineLayout m_pipeLayout = VK_NULL_HANDLE;
     VkSampler m_sampler = VK_NULL_HANDLE;
+    std::vector<VkFence> m_pendingFences; // inFlight fences of the last submit per output
 
     // The single HDR texture (wallpaper), shared by all outputs.
     VkImage m_texImage = VK_NULL_HANDLE;
