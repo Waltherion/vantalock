@@ -908,7 +908,7 @@ bool Renderer::createUboSet(VkBuffer &buf, VkDeviceMemory &mem, void *&mapped, V
 }
 
 bool Renderer::createOutput(Output &out, VkSurfaceKHR surface, uint32_t w, uint32_t h,
-                            const HdrImage &img, bool wantHdr)
+                            const HdrImage &img, bool wantHdr, VkSwapchainKHR oldSwapchain)
 {
     out.surface = surface;
     out.imgW = img.w;
@@ -982,6 +982,7 @@ bool Renderer::createOutput(Output &out, VkSurfaceKHR surface, uint32_t w, uint3
                      sci.presentMode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : "fifo");
     }
     sci.clipped = VK_TRUE;
+    sci.oldSwapchain = oldSwapchain;
     std::fprintf(stderr, "vantalock: output swapchain = %s %ux%u (format=%d)\n",
         out.hdr ? "scRGB (HDR)" : "sRGB (SDR)", extent.width, extent.height, int(sfmt.format));
     VKCHECK(vkCreateSwapchainKHR(m_device, &sci, nullptr, &out.swapchain), "swapchain");

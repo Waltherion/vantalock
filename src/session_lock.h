@@ -92,6 +92,9 @@ public:
         uint32_t w = 0, h = 0;             // LOGICAL size the compositor configured
         uint32_t bw = 0, bh = 0;           // BUFFER size we actually render (w*scale)
         double scale = 1.0;                // wp_fractional_scale preferred scale
+        bool scaleKnown = false;           // preferred_scale received (or wait timed out)
+        bool pendingConfigure = false;     // first configure parked until the scale is known
+        double scaleWaitStart = 0.0;
         wp_viewport *viewport = nullptr;
         wp_fractional_scale_v1 *fracScale = nullptr;
     };

@@ -498,6 +498,20 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
     if (ctx->w == 0 || ctx->h == 0)
         return;                       // no size agreed yet; wait for the next configure
 
+    // Wait for the preferred scale before the FIRST swapchain (bounded: the main loop
+    // releases this after 300 ms with scale 1.0). Building at the logical size first
+    // and rebuilding when the scale arrives is not just wasteful -- once the first
+    // frame has been presented, NVIDIA's WSI already owns a wp_fifo_v1 on the surface
+    // and a fresh swapchain asked the compositor for a second one, which killed the
+    // connection ("Surface already has a fifo") and dropped us to the hyprlock fallback.
+    if (ctx->fracScale && !ctx->scaleKnown && !ctx->configured) {
+        if (!ctx->pendingConfigure) {
+            ctx->pendingConfigure = true;
+            ctx->scaleWaitStart = nowSec();
+        }
+        return;
+    }
+
     // Buffer = logical * fractional scale, i.e. the output's real pixels. The viewport
     // tells the compositor to map that buffer onto the logical size, so it composites
     // 1:1 instead of scaling.
@@ -579,10 +593,20 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
         // Resize (or a scale change): rebuild the swapchain -- on the worker.
         const uint32_t w = ctx->bw, hgt = ctx->bh;
         postJob([this, ctx, w, hgt, wantHdr] {
-            m_renderer->destroyOutput(ctx->render);
+            // REUSE the VkSurfaceKHR. Destroying it and creating a new one on the same
+            // wl_surface made the compositor kill us with "Surface already has a fifo":
+            // the driver's WSI keeps the wl_surface's wp_fifo_v1 alive past
+            // vkDestroySurfaceKHR, so the replacement surface asks for a second one.
+            // A VkSurfaceKHR is just a handle on the wl_surface -- it survives swapchain
+            // rebuilds, which is the normal Vulkan resize pattern anyway.
+            Renderer::Output old = ctx->render;      // raw handles: a copy is fine
             ctx->render = Renderer::Output{};
-            ctx->render.surface = m_renderer->createWaylandSurface(m_display, ctx->surface);
-            if (m_renderer->createOutput(ctx->render, ctx->render.surface, w, hgt, m_image, wantHdr))
+            ctx->render.surface = old.surface;
+            const bool ok = m_renderer->createOutput(ctx->render, old.surface, w, hgt, m_image,
+                                                     wantHdr, old.swapchain);
+            old.surface = VK_NULL_HANDLE;            // the surface lives on in ctx->render
+            m_renderer->destroyOutput(old);          // retires the old swapchain + resources
+            if (ok)
                 m_renderer->renderOutput(ctx->render);
         });
     }
@@ -591,13 +615,20 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
 void SessionLock::onFractionalScale(OutputCtx *ctx, uint32_t scale120)
 {
     const double s = double(scale120) / 120.0;
-    if (s <= 0.0 || std::fabs(s - ctx->scale) < 0.001)
-        return;
-    std::fprintf(stderr, "vantalock: %s fractional scale %.3f\n",
-                 ctx->name.empty() ? "?" : ctx->name.c_str(), s);
-    ctx->scale = s;
-    if (ctx->w && ctx->h)
-        onSurfaceConfigure(ctx, 0, ctx->w, ctx->h);   // rebuild at the new buffer size
+    const bool changed = s > 0.0 && std::fabs(s - ctx->scale) >= 0.001;
+    if (changed) {
+        std::fprintf(stderr, "vantalock: %s fractional scale %.3f\n",
+                     ctx->name.empty() ? "?" : ctx->name.c_str(), s);
+        ctx->scale = s;
+    }
+    const bool release = !ctx->scaleKnown && ctx->pendingConfigure;
+    ctx->scaleKnown = true;
+    if (release) {
+        ctx->pendingConfigure = false;
+        onSurfaceConfigure(ctx, 0, ctx->w, ctx->h);   // build the FIRST swapchain, right size
+    } else if (changed && ctx->w && ctx->h) {
+        onSurfaceConfigure(ctx, 0, ctx->w, ctx->h);   // genuine scale change: rebuild
+    }
 }
 
 // ---- Render thread ------------------------------------------------------------------
@@ -887,6 +918,16 @@ bool SessionLock::run()
         if (wl_display_dispatch_pending(m_display) < 0) {
             std::fprintf(stderr, "vantalock: dispatch error\n");
             break;
+        }
+
+        for (auto &o : m_outputs) {
+            if (o->pendingConfigure && nowSec() - o->scaleWaitStart > 0.3) {
+                std::fprintf(stderr, "vantalock: %s no preferred scale in 300 ms; assuming 1.0\n",
+                             o->name.empty() ? "?" : o->name.c_str());
+                o->scaleKnown = true;
+                o->pendingConfigure = false;
+                onSurfaceConfigure(o.get(), 0, o->w, o->h);
+            }
         }
 
         if (m_rDeviceFailed) {

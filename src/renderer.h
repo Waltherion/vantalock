@@ -82,8 +82,12 @@ public:
     // Build the swapchain + per-output resources for one monitor. wantHdr selects
     // an scRGB swapchain (HDR monitor) vs an sRGB one (SDR monitor); the actual
     // mode used is reported in out.hdr (falls back to SDR if scRGB is unavailable).
+    // oldSwapchain: pass the previous swapchain on a REBUILD so the WSI hands its
+    // per-surface state (NVIDIA: the wp_fifo_v1 object) over instead of creating a
+    // second one -- which the compositor rejects with "Surface already has a fifo".
     bool createOutput(Output &out, VkSurfaceKHR surface, uint32_t w, uint32_t h,
-                      const HdrImage &img, bool wantHdr);
+                      const HdrImage &img, bool wantHdr,
+                      VkSwapchainKHR oldSwapchain = VK_NULL_HANDLE);
 
     // (Re)upload the overlay panel (clock/date) as a shared sRGB texture. Must be
     // called once before createOutput, and again on each per-minute refresh. The
