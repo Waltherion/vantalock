@@ -755,6 +755,7 @@ bool SessionLock::run()
     constexpr double kShakeDecay = 0.13; // shake exponential decay
 
     const int fd = wl_display_get_fd(m_display);
+    double lastFrameReq = 0.0;
     while (m_running && !m_finished) {
         // Prepare-read pattern so we can poll with a timeout for the safety net.
         // dispatch_pending's return MUST be checked: on a broken connection it fails
@@ -889,8 +890,14 @@ bool SessionLock::run()
                 const double elapsed = tnow - (double(start.tv_sec) + double(start.tv_nsec) / 1e9);
                 m_rPhase = float(m_config.rainbowSpeed * elapsed);
             }
-            if (animOk && (rainbowAnim || fadeActive || shakeActive))
+            // Pace the animation ourselves: the loop iterates on every Wayland event, not
+            // just the poll timeout, so without this the request rate (and GPU load) was
+            // bounded only by whatever the present mode happened to block on.
+            const double interval = (fadeActive || shakeActive) ? 1.0 / 60.0 : 1.0 / 30.0;
+            if (animOk && (rainbowAnim || fadeActive || shakeActive) && tnow - lastFrameReq >= interval) {
+                lastFrameReq = tnow;
                 m_frameReq = true;   // coalesced: a stalled worker never accumulates a backlog
+            }
         }
         m_rcv.notify_one();
     }

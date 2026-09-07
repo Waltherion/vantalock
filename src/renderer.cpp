@@ -965,16 +965,22 @@ bool Renderer::createOutput(Output &out, VkSurfaceKHR surface, uint32_t w, uint3
     sci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     sci.preTransform = caps.currentTransform;
     sci.compositeAlpha = alpha;
-    // MAILBOX when the surface offers it: FIFO presents block until a vblank the output
-    // will never produce while DPMS-off, and on NVIDIA that wait sat inside the render
-    // path. Mailbox just replaces the pending image. FIFO remains the guaranteed fallback.
+    // FIFO by default, on purpose. Its present blocks until a vblank -- which is exactly
+    // what we want now that rendering lives on the worker thread: while the output is
+    // DPMS-off the worker simply parks (zero GPU work for hours of lock), and when the
+    // screen comes back the present returns and rendering resumes. The main thread never
+    // waits on it, and a truly wedged present is handled by the bounded shutdown.
+    // MAILBOX (VANTALOCK_PRESENT=mailbox) never blocks but also never throttles: measured
+    // 99% GPU vs 58% with FIFO for the same 30 fps request rate -- audible fans.
     {
         uint32_t pmCount = 0;
         vkGetPhysicalDeviceSurfacePresentModesKHR(m_phys, surface, &pmCount, nullptr);
         std::vector<VkPresentModeKHR> pms(pmCount);
         if (pmCount) vkGetPhysicalDeviceSurfacePresentModesKHR(m_phys, surface, &pmCount, pms.data());
         sci.presentMode = VK_PRESENT_MODE_FIFO_KHR;
-        for (auto pm : pms) if (pm == VK_PRESENT_MODE_MAILBOX_KHR) sci.presentMode = pm;
+        const char *want = std::getenv("VANTALOCK_PRESENT");
+        if (want && std::strcmp(want, "mailbox") == 0)
+            for (auto pm : pms) if (pm == VK_PRESENT_MODE_MAILBOX_KHR) sci.presentMode = pm;
         std::fprintf(stderr, "vantalock: present mode = %s\n",
                      sci.presentMode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : "fifo");
     }
