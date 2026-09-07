@@ -7,6 +7,8 @@
 #include <wayland-client.h>
 #include "ext-session-lock-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
+#include "viewporter-client-protocol.h"
+#include "fractional-scale-v1-client-protocol.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -85,6 +87,13 @@ const xdg_toplevel_listener kXdgToplevelListener = {
     xdgTopConfigure, xdgTopClose, xdgTopConfigureBounds, xdgTopWmCapabilities
 };
 
+void fsPreferred(void *data, wp_fractional_scale_v1 *, uint32_t scale120)
+{
+    auto *ctx = static_cast<SessionLock::OutputCtx *>(data);
+    ctx->owner->onFractionalScale(ctx, scale120);
+}
+const wp_fractional_scale_v1_listener kFracScaleListener = { fsPreferred };
+
 void kbKeymap(void *data, wl_keyboard *, uint32_t, int32_t fd, uint32_t size)
 {
     static_cast<SessionLock *>(data)->onKeymap(fd, size);
@@ -159,6 +168,10 @@ SessionLock::~SessionLock()
             xdg_toplevel_destroy(o->xdgToplevel);
         if (o->xdgSurface)
             xdg_surface_destroy(o->xdgSurface);
+        if (o->fracScale)
+            wp_fractional_scale_v1_destroy(o->fracScale);
+        if (o->viewport)
+            wp_viewport_destroy(o->viewport);
         if (o->surface)
             wl_surface_destroy(o->surface);
     }
@@ -172,6 +185,8 @@ SessionLock::~SessionLock()
     if (m_seat) wl_seat_destroy(m_seat);
     if (m_lockManager) ext_session_lock_manager_v1_destroy(m_lockManager);
     if (m_xdgBase) xdg_wm_base_destroy(m_xdgBase);
+    if (m_fracMgr) wp_fractional_scale_manager_v1_destroy(m_fracMgr);
+    if (m_viewporter) wp_viewporter_destroy(m_viewporter);
     if (m_compositor) wl_compositor_destroy(m_compositor);
     if (m_display) wl_display_disconnect(m_display);
 }
@@ -192,6 +207,12 @@ void SessionLock::onGlobal(wl_registry *reg, uint32_t name, const char *iface, u
         m_xdgBase = static_cast<xdg_wm_base *>(
             wl_registry_bind(reg, name, &xdg_wm_base_interface, version < 2 ? version : 2));
         xdg_wm_base_add_listener(m_xdgBase, &kXdgBaseListener, this); // must pong or get killed
+    } else if (std::strcmp(iface, wp_viewporter_interface.name) == 0) {
+        m_viewporter = static_cast<wp_viewporter *>(
+            wl_registry_bind(reg, name, &wp_viewporter_interface, 1));
+    } else if (std::strcmp(iface, wp_fractional_scale_manager_v1_interface.name) == 0) {
+        m_fracMgr = static_cast<wp_fractional_scale_manager_v1 *>(
+            wl_registry_bind(reg, name, &wp_fractional_scale_manager_v1_interface, 1));
     } else if (std::strcmp(iface, wl_seat_interface.name) == 0) {
         m_seat = static_cast<wl_seat *>(
             wl_registry_bind(reg, name, &wl_seat_interface, version < 5 ? version : 5));
@@ -448,6 +469,17 @@ void SessionLock::setupOutput(OutputCtx *ctx)
         ext_session_lock_surface_v1_add_listener(ctx->lockSurface, &kSurfaceListener, ctx);
     }
 
+    // Fractional scaling: ask for the output's real scale and map our physical-pixel
+    // buffer back to the logical size via a viewport. Without this the compositor
+    // upscales our buffer (1.25x here), which resamples finished glyph edges into
+    // visible stair-steps on big text.
+    if (m_viewporter)
+        ctx->viewport = wp_viewporter_get_viewport(m_viewporter, ctx->surface);
+    if (m_fracMgr) {
+        ctx->fracScale = wp_fractional_scale_manager_v1_get_fractional_scale(m_fracMgr, ctx->surface);
+        wp_fractional_scale_v1_add_listener(ctx->fracScale, &kFracScaleListener, ctx);
+    }
+
     VkSurfaceKHR vks = m_renderer->createWaylandSurface(m_display, ctx->surface);
     ctx->render.surface = vks;
     std::lock_guard<std::mutex> g(m_rmx);
@@ -456,7 +488,7 @@ void SessionLock::setupOutput(OutputCtx *ctx)
 
 void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w, uint32_t h)
 {
-    if (ctx->lockSurface)             // preview acks on the xdg_surface instead
+    if (ctx->lockSurface && serial != 0)   // preview / scale-change re-entry passes 0
         ext_session_lock_surface_v1_ack_configure(ctx->lockSurface, serial);
     wl_display_flush(m_display);
     if (w > 0 && h > 0) {             // preview may pass its cached toplevel size
@@ -465,6 +497,14 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
     }
     if (ctx->w == 0 || ctx->h == 0)
         return;                       // no size agreed yet; wait for the next configure
+
+    // Buffer = logical * fractional scale, i.e. the output's real pixels. The viewport
+    // tells the compositor to map that buffer onto the logical size, so it composites
+    // 1:1 instead of scaling.
+    ctx->bw = uint32_t(std::lround(ctx->w * ctx->scale));
+    ctx->bh = uint32_t(std::lround(ctx->h * ctx->scale));
+    if (ctx->viewport)
+        wp_viewport_set_destination(ctx->viewport, int32_t(ctx->w), int32_t(ctx->h));
 
     // The overlay canvas is built once, but the thumbnail border depends on the OUTPUT
     // aspect -- and the first configure is not always the final size (a preview window
@@ -487,7 +527,7 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
         // Render the canvas at this output's native resolution so the text is sharp
         // (the 1920x1080 reference is upscaled otherwise -> blurry on 4K). The scale
         // is fixed here and reused on every refresh so the texture size stays stable.
-        m_overlayScale = ctx->h > 0 ? double(ctx->h) / 1080.0 : 1.0;
+        m_overlayScale = ctx->bh > 0 ? double(ctx->bh) / 1080.0 : 1.0;
         m_overlayOutAspect = ctx->h > 0 ? double(ctx->w) / double(ctx->h) : 0.0;
         m_overlayAspect = (m_image.w > 1 && m_image.h > 1) ? double(m_image.w) / double(m_image.h) : 0.0;
         overlay::TextImage ov = overlay::renderOverlay(m_ostate, m_config, m_overlayScale,
@@ -526,7 +566,7 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
         if (m_preview && m_fadeStart < 0.0)
             m_fadeStart = nowSec();
         { std::lock_guard<std::mutex> g(m_rmx); m_rFade = 0.0f; } // first frame black, then ease in
-        const uint32_t w = ctx->w, hgt = ctx->h;
+        const uint32_t w = ctx->bw, hgt = ctx->bh;
         postJob([this, ctx, w, hgt, wantHdr] {
             if (!m_renderer->createOutput(ctx->render, ctx->render.surface, w, hgt, m_image, wantHdr)) {
                 std::fprintf(stderr, "vantalock: createOutput failed\n");
@@ -535,9 +575,9 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
             ctx->configured = true;
             m_renderer->renderOutput(ctx->render);   // the one frame the lock protocol needs
         });
-    } else if (ctx->render.extent.width != ctx->w || ctx->render.extent.height != ctx->h) {
-        // Resize: rebuild swapchain (keep the cm tag + surface) -- on the worker.
-        const uint32_t w = ctx->w, hgt = ctx->h;
+    } else if (ctx->render.extent.width != ctx->bw || ctx->render.extent.height != ctx->bh) {
+        // Resize (or a scale change): rebuild the swapchain -- on the worker.
+        const uint32_t w = ctx->bw, hgt = ctx->bh;
         postJob([this, ctx, w, hgt, wantHdr] {
             m_renderer->destroyOutput(ctx->render);
             ctx->render = Renderer::Output{};
@@ -546,6 +586,18 @@ void SessionLock::onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w
                 m_renderer->renderOutput(ctx->render);
         });
     }
+}
+
+void SessionLock::onFractionalScale(OutputCtx *ctx, uint32_t scale120)
+{
+    const double s = double(scale120) / 120.0;
+    if (s <= 0.0 || std::fabs(s - ctx->scale) < 0.001)
+        return;
+    std::fprintf(stderr, "vantalock: %s fractional scale %.3f\n",
+                 ctx->name.empty() ? "?" : ctx->name.c_str(), s);
+    ctx->scale = s;
+    if (ctx->w && ctx->h)
+        onSurfaceConfigure(ctx, 0, ctx->w, ctx->h);   // rebuild at the new buffer size
 }
 
 // ---- Render thread ------------------------------------------------------------------

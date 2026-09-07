@@ -34,6 +34,10 @@ struct ext_session_lock_surface_v1;
 struct xdg_wm_base;
 struct xdg_surface;
 struct xdg_toplevel;
+struct wp_viewporter;
+struct wp_viewport;
+struct wp_fractional_scale_manager_v1;
+struct wp_fractional_scale_v1;
 
 namespace cm {
 class SurfaceColor;
@@ -85,8 +89,13 @@ public:
         std::unique_ptr<cm::SurfaceColor> color;
         Renderer::Output render;          // touched ONLY by the render thread after setup
         std::atomic<bool> configured{false};
-        uint32_t w = 0, h = 0;
+        uint32_t w = 0, h = 0;             // LOGICAL size the compositor configured
+        uint32_t bw = 0, bh = 0;           // BUFFER size we actually render (w*scale)
+        double scale = 1.0;                // wp_fractional_scale preferred scale
+        wp_viewport *viewport = nullptr;
+        wp_fractional_scale_v1 *fracScale = nullptr;
     };
+    void onFractionalScale(OutputCtx *ctx, uint32_t scale120);
     void onSurfaceConfigure(OutputCtx *ctx, uint32_t serial, uint32_t w, uint32_t h);
     void onOutputName(OutputCtx *ctx, const char *name);
 
@@ -130,6 +139,8 @@ private:
     ext_session_lock_manager_v1 *m_lockManager = nullptr;
     ext_session_lock_v1 *m_lock = nullptr;
     xdg_wm_base *m_xdgBase = nullptr; // preview only
+    wp_viewporter *m_viewporter = nullptr;
+    wp_fractional_scale_manager_v1 *m_fracMgr = nullptr;
     bool m_preview = false;
 
     std::unique_ptr<Renderer> m_renderer;

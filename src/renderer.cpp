@@ -926,9 +926,6 @@ bool Renderer::createOutput(Output &out, VkSurfaceKHR surface, uint32_t w, uint3
     VkPipeline overlayPipe = VK_NULL_HANDLE;
     if (!getOrCreatePipeline(sfmt.format, out.renderPass, out.pipeline, overlayPipe))
         return false;
-    std::fprintf(stderr, "vantalock: output swapchain = %s (format=%d)\n",
-        gotHdr ? "scRGB (HDR)" : "sRGB (SDR)", int(sfmt.format));
-
     VkSurfaceCapabilitiesKHR caps;
     VKCHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(m_phys, surface, &caps), "surface caps");
 
@@ -985,6 +982,8 @@ bool Renderer::createOutput(Output &out, VkSurfaceKHR surface, uint32_t w, uint3
                      sci.presentMode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : "fifo");
     }
     sci.clipped = VK_TRUE;
+    std::fprintf(stderr, "vantalock: output swapchain = %s %ux%u (format=%d)\n",
+        out.hdr ? "scRGB (HDR)" : "sRGB (SDR)", extent.width, extent.height, int(sfmt.format));
     VKCHECK(vkCreateSwapchainKHR(m_device, &sci, nullptr, &out.swapchain), "swapchain");
 
     uint32_t n = 0;

@@ -54,6 +54,12 @@ wl_protocol("${WAYLAND_PROTOCOLS_DIR}/staging/ext-session-lock/ext-session-lock-
 # Only used by `--preview` (a normal fullscreen window instead of a lock surface).
 wl_protocol("${WAYLAND_PROTOCOLS_DIR}/stable/xdg-shell/xdg-shell.xml"
     "xdg-shell" XDG_SOURCES)
+# Render at the output's REAL pixel size on fractional-scale setups: the buffer is
+# physical, wp_viewport maps it back to the logical size the compositor configured.
+wl_protocol("${WAYLAND_PROTOCOLS_DIR}/stable/viewporter/viewporter.xml"
+    "viewporter" VIEWPORTER_SOURCES)
+wl_protocol("${WAYLAND_PROTOCOLS_DIR}/staging/fractional-scale/fractional-scale-v1.xml"
+    "fractional-scale-v1" FRACSCALE_SOURCES)
 
 # --- Compile shaders to SPIR-V embedded as C arrays ------------------------
 set(SPV_DIR "${CMAKE_CURRENT_BINARY_DIR}/spv")
@@ -80,6 +86,8 @@ add_executable(vantalock
     ${CM_SOURCES}
     ${LOCK_SOURCES}
     ${XDG_SOURCES}
+    ${VIEWPORTER_SOURCES}
+    ${FRACSCALE_SOURCES}
 )
 
 # renderer.cpp #includes the generated SPIR-V initialisers.
